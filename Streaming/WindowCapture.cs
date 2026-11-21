@@ -81,7 +81,11 @@ internal sealed class WindowCapture : IDisposable
     {
         if (_method == CaptureMethod.PrintWindow)
         {
-            Native.PrintWindow(_hwnd, _memDc, Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT);
+            // PrintWindow espera o jogo responder e não tem limite de tempo: com a janela travada ele prenderia a
+            // captura (e, com ela, todo o vídeo). Se o Windows já considera a janela sem resposta, repete a última
+            // imagem capturada: o vídeo continua fluindo e volta ao normal sozinho quando o jogo destravar.
+            if (!Native.IsHungAppWindow(_hwnd))
+                Native.PrintWindow(_hwnd, _memDc, Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT);
         }
         else
         {

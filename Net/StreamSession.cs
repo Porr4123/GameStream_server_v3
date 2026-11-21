@@ -43,12 +43,15 @@ public sealed class StreamSession
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         var ct = cts.Token;
-        var sender = new WsSender(ws);
 
         // Tamanho fixo da transmissão (par, exigência do H.264 yuv420p). 0 no game.json = 640x480.
         int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 640) & ~1;
         int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 480) & ~1;
         int fps = Math.Clamp(_profile.Fps, 1, 60);
+
+        // Fila de envio curta (~0,5 s): se o celular/Wi-Fi não acompanharem, descarta até o próximo keyframe
+        // em vez de parar o ffmpeg e acumular atraso.
+        var sender = new WsSender(ws, Math.Max(4, fps / 2));
 
         var limits = ResourceLimits.Compute(
             _profile.Cores ?? _options.GameCores,
@@ -57,7 +60,8 @@ public sealed class StreamSession
 
         FrameComposer? composer = null;
         FfmpegEncoder? encoder = null;
-        Task encoderTask = Task.CompletedTask, receiveTask = Task.CompletedTask, gameTask = Task.CompletedTask;
+        Task encoderTask = Task.CompletedTask, videoTask = Task.CompletedTask, receiveTask = Task.CompletedTask,
+            gameTask = Task.CompletedTask, statsTask = Task.CompletedTask;
 
         try
         {
@@ -67,8 +71,10 @@ public sealed class StreamSession
             // O cliente recebe algo imediatamente: "hello" agora e vídeo logo em seguida, mesmo sem jogo.
             await sender.SendJsonAsync(new { t = "hello", game = _profile.Id, w = width, h = height, fps }, ct);
 
-            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask);
-            encoderTask = encoder.RunAsync(au => sender.SendVideoAsync(au, ct), ct);
+            videoTask = sender.RunVideoAsync(ct);
+
+            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log);
+            encoderTask = encoder.RunAsync(sender.EnqueueVideo, ct);
 
             // Recebe desde já: sem isso, o ping do cliente ficava sem resposta enquanto o jogo abria.
             receiveTask = ReceiveLoopAsync(ws, sender, ct);
@@ -76,13 +82,20 @@ public sealed class StreamSession
             // O jogo abre em segundo plano; a tela de espera cobre o tempo de carregamento.
             gameTask = RunGameAsync(composer, limits, ct);
 
-            // Termina quando o cliente sai ou o codificador para. O fim do jogo NÃO encerra a sessão.
-            var finished = await Task.WhenAny(encoderTask, receiveTask);
+            statsTask = LogStatsAsync(sender, ct);
+
+            // Termina quando o cliente sai ou o codificador/envio para. O fim do jogo NÃO encerra a sessão.
+            var finished = await Task.WhenAny(encoderTask, receiveTask, videoTask);
             await finished; // repassa erro, se houver
         }
         catch (OperationCanceledException)
         {
             // sessão encerrada
+        }
+        catch (WebSocketException ex)
+        {
+            // O celular fechou o app/perdeu o Wi-Fi sem despedida: é o fim normal de uma sessão, não um erro do servidor.
+            _log.LogInformation("Conexão com o cliente encerrada ({Reason})", ex.Message);
         }
         catch (Exception ex)
         {
@@ -91,22 +104,73 @@ public sealed class StreamSession
         finally
         {
             cts.Cancel();
+
+            // 1º o jogo. Uma janela que parou de responder pode deixar a captura (PrintWindow) presa dentro do
+            // compositor; ela só solta quando o jogo morre. Esperar o codificador antes de matar o jogo travava
+            // a sessão para sempre e o servidor ficava "ocupado" para os próximos clientes.
+            Interlocked.Exchange(ref _game, null)?.Dispose();
             encoder?.Dispose();
 
-            await SwallowAsync(encoderTask);
-            await SwallowAsync(receiveTask);
-            await SwallowAsync(gameTask);
+            bool clean = await WaitAllAsync(TimeSpan.FromSeconds(5),
+                encoderTask, videoTask, receiveTask, gameTask, statsTask);
 
-            Interlocked.Exchange(ref _game, null)?.Dispose();
-            composer?.Dispose();
+            if (composer is not null)
+            {
+                if (clean)
+                {
+                    composer.Dispose();
+                }
+                else
+                {
+                    // Algo ainda está preso dentro do compositor: libera em segundo plano para não segurar o servidor.
+                    _log.LogWarning("A sessão de {Game} demorou para encerrar; liberando recursos em segundo plano.", _profile.Id);
+                    var c = composer;
+                    _ = Task.Run(() => { try { c.Dispose(); } catch { /* ignora */ } });
+                }
+            }
 
             if (ws.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "fim", CancellationToken.None); }
+                try
+                {
+                    using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "fim", closeTimeout.Token);
+                }
                 catch { /* ignora */ }
             }
             _log.LogInformation("Sessão de {Game} encerrada", _profile.Id);
         }
+    }
+
+    /// <summary>Estatísticas do vídeo a cada 5 s: mostram se os quadros estão saindo, e se a rede está descartando.</summary>
+    private async Task LogStatsAsync(WsSender sender, CancellationToken ct)
+    {
+        try
+        {
+            const int seconds = 5;
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(seconds));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                var st = sender.TakeStats();
+                var level = st.FramesSent == 0 || st.FramesDropped > 0 ? LogLevel.Warning : LogLevel.Information;
+                _log.Log(level,
+                    "Vídeo de {Game}: {Fps:0.#} quadros/s, {Kbps} kbps, descartados {Dropped} ({Overflows} estouros da fila), " +
+                    "envio mais lento {MaxMs} ms, fila {Queued}",
+                    _profile.Id, st.FramesSent / (double)seconds, st.BytesSent * 8 / 1000 / seconds,
+                    st.FramesDropped, st.Overflows, st.MaxSendMs, st.Queued);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // sessão encerrada
+        }
+    }
+
+    /// <summary>Espera todas as tarefas, engolindo erros, por no máximo <paramref name="timeout"/>. true = todas terminaram.</summary>
+    private static async Task<bool> WaitAllAsync(TimeSpan timeout, params Task[] tasks)
+    {
+        var all = Task.WhenAll(tasks.Select(SwallowAsync));
+        return await Task.WhenAny(all, Task.Delay(timeout)) == all;
     }
 
     /// <summary>Abre o jogo, esconde a janela (se configurado) e passa a transmitir a imagem dele.</summary>

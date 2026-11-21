@@ -9,7 +9,7 @@ namespace GameStream.Server.Streaming;
 ///  - jogo: a captura da janela, redimensionada e centralizada (sem distorcer a proporção).
 /// Como o tamanho nunca muda, o cliente recebe vídeo desde o primeiro instante, com ou sem jogo.
 /// </summary>
-internal sealed class FrameComposer : IDisposable
+internal sealed class FrameComposer : IFrameSource, IDisposable
 {
     private readonly object _lock = new();
     private readonly int _w;

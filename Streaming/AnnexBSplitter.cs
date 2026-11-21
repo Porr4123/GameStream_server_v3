@@ -63,6 +63,30 @@ public sealed class AnnexBSplitter
         return -1;
     }
 
+    /// <summary>
+    /// Posição do primeiro byte depois do AUD (NAL tipo 9) que abre o quadro; 0 se o quadro não começa com AUD.
+    /// O AUD só serve para o servidor separar os quadros. Nada no decodificador do celular precisa dele,
+    /// e alguns decodificadores de hardware implicam com NALs que não são de imagem (como já acontecia com o SEI).
+    /// </summary>
+    public static int SkipAud(byte[] au)
+    {
+        int i;
+        if (au.Length >= 4 && au[0] == 0 && au[1] == 0 && au[2] == 0 && au[3] == 1) i = 4;
+        else if (au.Length >= 3 && au[0] == 0 && au[1] == 0 && au[2] == 1) i = 3;
+        else return 0;
+
+        if (i >= au.Length || (au[i] & 0x1F) != 9) return 0;
+
+        // O AUD tem 1 byte de cabeçalho + 1 byte de conteúdo (nunca zero). O próximo start code vem logo depois.
+        for (int j = i + 1; j + 2 < au.Length; j++)
+        {
+            if (au[j] != 0 || au[j + 1] != 0) continue;
+            if (au[j + 2] == 1) return j;
+            if (au[j + 2] == 0 && j + 3 < au.Length && au[j + 3] == 1) return j;
+        }
+        return 0;
+    }
+
     /// <summary>true se o quadro contém um slice IDR (NAL tipo 5).</summary>
     public static bool IsKeyFrame(byte[] au)
     {
