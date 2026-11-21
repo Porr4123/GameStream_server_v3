@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameStream - teste</title>
+<style>
+  body { background:#111; color:#ddd; font-family:sans-serif; margin:16px; }
+  canvas { image-rendering:pixelated; max-width:100%; border:1px solid #444; background:#000; display:block; margin-top:12px; }
+  input, button { padding:6px 10px; }
+</style>
+</head>
+<body>
+<h3>GameStream - teste no navegador</h3>
+<p>Use no mesmo PC (localhost) com Chrome ou Edge. O WebCodecs só funciona em contexto seguro.</p>
+<input id="pin" placeholder="PIN" size="8">
+<input id="game" placeholder="id do jogo" value="exemplo" size="14">
+<button id="go">Conectar</button> <span id="st"></span>
+<canvas id="cv" width="640" height="480"></canvas>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('cv'), ctx = canvas.getContext('2d');
+let ws = null, decoder = null, gotKey = false, ts = 0, frameUs = 33333;
+
+const KEYS = { ArrowUp:'UP', ArrowDown:'DOWN', ArrowLeft:'LEFT', ArrowRight:'RIGHT', End:'END', Enter:'ENTER',
+               Escape:'ESC', ' ':'SPACE', Shift:'SHIFT', Control:'CTRL', Alt:'ALT', Tab:'TAB', Backspace:'BACKSPACE' };
+
+function mapKey(e) {
+  if (KEYS[e.key]) return KEYS[e.key];
+  if (/^[a-zA-Z0-9]$/.test(e.key)) return e.key.toUpperCase();
+  return null;
+}
+
+function startDecoder() {
+  decoder = new VideoDecoder({
+    output: frame => { ctx.drawImage(frame, 0, 0, canvas.width, canvas.height); frame.close(); },
+    error: e => { console.error(e); $('st').textContent = 'erro no decoder: ' + e.message; }
+  });
+  // Sem "description" = H.264 em Annex B. baseline nível 3.1 (igual ao ffmpeg do servidor).
+  decoder.configure({ codec: 'avc1.42001f', optimizeForLatency: true });
+}
+
+$('go').onclick = () => {
+  if (!('VideoDecoder' in window)) { $('st').textContent = 'WebCodecs indisponível (use Chrome/Edge em localhost)'; return; }
+  gotKey = false; ts = 0;
+  const url = `ws://${location.host}/stream?game=${encodeURIComponent($('game').value)}&pin=${encodeURIComponent($('pin').value)}`;
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  $('st').textContent = 'conectando (o jogo está abrindo)...';
+
+  ws.onmessage = ev => {
+    if (typeof ev.data === 'string') {
+      const m = JSON.parse(ev.data);
+      if (m.t === 'hello') {
+        canvas.width = m.w; canvas.height = m.h; frameUs = 1e6 / m.fps;
+        startDecoder();
+        $('st').textContent = 'conectado';
+      } else if (m.t === 'error') {
+        $('st').textContent = 'erro: ' + m.msg;
+      }
+      return;
+    }
+    const v = new Uint8Array(ev.data);
+    if (v[0] !== 1 || !decoder) return;
+    const isKey = (v[1] & 1) === 1;
+    if (!gotKey && !isKey) return; // espera o primeiro keyframe
+    gotKey = true;
+    decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: (ts += frameUs), data: v.subarray(2) }));
+  };
+  ws.onclose = () => { if (!$('st').textContent.startsWith('erro')) $('st').textContent = 'desconectado'; };
+};
+
+function sendKey(e, down) {
+  if (!ws || ws.readyState !== 1 || document.activeElement.tagName === 'INPUT') return;
+  const k = mapKey(e);
+  if (!k) return;
+  e.preventDefault();
+  ws.send(JSON.stringify({ t: 'key', k, d: down }));
+}
+addEventListener('keydown', e => { if (!e.repeat) sendKey(e, 1); });
+addEventListener('keyup', e => sendKey(e, 0));
+</script>
+</body>
+</html>

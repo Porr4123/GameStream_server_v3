@@ -1,0 +1,1 @@
+Coloque aqui o ffmpeg.exe (build com libx264 e gdigrab).
