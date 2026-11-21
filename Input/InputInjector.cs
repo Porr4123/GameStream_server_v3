@@ -14,6 +14,20 @@ public sealed class InputInjector
     private readonly IntPtr _hwnd;
     private readonly object _lock = new();
 
+    private long _sent, _focusAttempts, _focusFailures, _totalFocusFailures;
+    private string _lastForeground = "";
+
+    /// <summary>Teclas enviadas, e quantas vezes o Windows recusou dar foco ao jogo (as teclas, então, vão para OUTRA janela).</summary>
+    public (long Sent, long FocusAttempts, long FocusFailures, long TotalFocusFailures, string Foreground) TakeStats()
+    {
+        lock (_lock)
+        {
+            var r = (_sent, _focusAttempts, _focusFailures, _totalFocusFailures, _lastForeground);
+            _sent = _focusAttempts = _focusFailures = 0;
+            return r;
+        }
+    }
+
     public InputInjector(IEnumerable<string> allowedKeys, IntPtr gameWindow)
     {
         _allowed = new HashSet<string>(allowedKeys, StringComparer.OrdinalIgnoreCase);
@@ -59,11 +73,21 @@ public sealed class InputInjector
     {
         // O Windows pode recusar trazer a janela para frente; por isso o ideal é o jogo
         // rodar num monitor virtual / sessão dedicada. TODO.
-        if (Native.IsWindow(_hwnd) && Native.GetForegroundWindow() != _hwnd)
-            Native.SetForegroundWindow(_hwnd);
+        if (!Native.IsWindow(_hwnd) || Native.GetForegroundWindow() == _hwnd) return;
+
+        _focusAttempts++;
+        Native.SetForegroundWindow(_hwnd);
+
+        var fg = Native.GetForegroundWindow();
+        if (fg != _hwnd)
+        {
+            _focusFailures++;
+            _totalFocusFailures++;
+            _lastForeground = fg == IntPtr.Zero ? "(nenhuma)" : $"\"{Native.GetTitle(fg)}\" [{Native.GetClass(fg)}]";
+        }
     }
 
-    private static void Send(KeyCode code, bool down)
+    private void Send(KeyCode code, bool down)
     {
         uint flags = Native.KEYEVENTF_SCANCODE;
         if (code.Extended) flags |= Native.KEYEVENTF_EXTENDEDKEY;
@@ -79,5 +103,6 @@ public sealed class InputInjector
         };
 
         Native.SendInput(1, new[] { input }, Marshal.SizeOf<Native.INPUT>());
+        _sent++;
     }
 }

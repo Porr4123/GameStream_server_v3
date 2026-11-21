@@ -132,6 +132,20 @@ Vídeo de rpg: 30 quadros/s, 1480 kbps, descartados 0 (0 estouros da fila), envi
 - Se a janela do jogo para de responder, o servidor repete a última imagem (o vídeo não para) e volta ao normal quando o jogo destravar.
 - Se o jogo trava, sair do app no celular encerra a sessão mesmo assim: o servidor mata o jogo primeiro e libera o jogador seguinte.
 
+### Diagnóstico avançado (imagem congelada, preta ou sem resposta às teclas)
+
+Se o vídeo flui (30 quadros/s, 0 descartes) mas o jogo parece "travado", o problema está **antes** do codificador. Um bitrate constante e baixo (ex.: 96 kbps) significa que a imagem enviada é sempre idêntica. O servidor agora investiga sozinho:
+
+- **Arquivo de log**: `diagnostico\servidor-AAAA-MM-DD_HH-mm-ss.log` (mesmo conteúdo do console, com horário). **Envie este arquivo** ao reportar um problema.
+- **Página ao vivo**: com o celular conectado, abra `http://localhost:5055/debug` no PC (só aceita acesso local). Mostra a imagem exata enviada ao codificador e o estado do jogo/captura/teclas, atualizando a cada 1 s.
+- **Linhas `DIAGNÓSTICO`**: `DIAGNÓSTICO ERRO|AVISO [CÓDIGO] mensagem`, com a causa provável e o teste sugerido. Códigos: `IMAGEM_PARADA`, `JANELA_TRAVADA`, `JANELA_MINIMIZADA`, `CAPTURA_FALHA`, `CAPTURA_FALHA_PARCIAL`, `CAPTURA_LENTA`, `SEM_VIDEO`, `REDE_LENTA`, `SEM_FOCO`, `TECLAS_RECUSADAS`, `TECLA_SEM_EFEITO`, `JOGO_FECHOU`. Cada problema é escrito uma vez, repetido a cada 30 s se continuar, e avisado quando some.
+- **Provas em disco** (na mesma pasta): `quadro-*.bmp` (o que foi capturado: preto? parado?) e `video-*.h264` (os primeiros 20 s do fluxo exatamente como enviados ao celular; abra com `ffplay -f h264 video-*.h264`). Se o `.h264` toca no PC e o celular não decodifica, o problema é do decodificador do celular; se o `.bmp` já está preto/parado, é da captura.
+- Resumo no fim da sessão (quadros, bytes, keyframes, teclas, mudanças de imagem) e conferência do SPS enviado contra o `hello`.
+- O cliente pode mandar `{"t":"log","m":"texto"}` e a mensagem aparece no log do servidor.
+- Opções em `appsettings.json` > `Server:Diagnostics`: `Enabled`, `Dir`, `FileLog`, `SaveFrames`, `DumpH264Seconds` (0 desliga), `DebugPage`, `KeepDays`.
+
+Se o log indicar `IMAGEM_PARADA` com o jogo ativo, teste no `game.json` primeiro `"hideWindow": false` e depois também `"captureMode": "screen"`.
+
 ## Autoteste
 
 Confere o caminho do vídeo inteiro **sem celular e sem jogo**: ffmpeg real com quadros sintéticos, divisão em quadros,

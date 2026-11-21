@@ -9,7 +9,10 @@ namespace GameStream.Server.Net;
 
 /// <summary>Contadores do vídeo desde a última leitura (para o log de diagnóstico).</summary>
 internal readonly record struct VideoStats(
-    long FramesSent, long BytesSent, long FramesDropped, long Overflows, long MaxSendMs, int Queued);
+    long FramesSent, long BytesSent, long FramesDropped, long Overflows, long MaxSendMs, int Queued, long KeyframesSent = 0);
+
+/// <summary>Totais da sessão inteira (para o resumo no fim).</summary>
+internal readonly record struct VideoTotals(long FramesSent, long BytesSent, long FramesDropped, long Overflows, long KeyframesSent);
 
 /// <summary>
 /// Um WebSocket só aceita um envio por vez. Este envelope serializa vídeo, "hello" e "pong",
@@ -28,7 +31,11 @@ internal sealed class WsSender
     private readonly int _maxQueued;
 
     private bool _waitKey = true; // só a thread do codificador mexe aqui
-    private long _sent, _bytes, _dropped, _overflows, _maxSendMs;
+    private long _sent, _bytes, _dropped, _overflows, _maxSendMs, _keys;
+    private long _totSent, _totBytes, _totDropped, _totOverflows, _totKeys;
+
+    /// <summary>Chamado com cada mensagem de vídeo DEPOIS de enviada (usado para gravar em disco o que o celular recebeu).</summary>
+    public Action<byte[]>? OnVideoSent { get; set; }
 
     /// <param name="maxQueuedFrames">Quadros que podem esperar para sair. Passou disso, descarta até o próximo keyframe.</param>
     public WsSender(WebSocket ws, int maxQueuedFrames = 15)
@@ -62,6 +69,7 @@ internal sealed class WsSender
             if (!key)
             {
                 Interlocked.Increment(ref _dropped);
+                Interlocked.Increment(ref _totDropped);
                 return;
             }
             _waitKey = false;
@@ -73,7 +81,9 @@ internal sealed class WsSender
             int flushed = 0;
             while (_video.Reader.TryRead(out _)) flushed++;
             Interlocked.Add(ref _dropped, flushed);
+            Interlocked.Add(ref _totDropped, flushed);
             Interlocked.Increment(ref _overflows);
+            Interlocked.Increment(ref _totOverflows);
 
             if (key)
             {
@@ -82,6 +92,7 @@ internal sealed class WsSender
             else
             {
                 Interlocked.Increment(ref _dropped);
+                Interlocked.Increment(ref _totDropped);
                 _waitKey = true;
             }
         }
@@ -98,7 +109,18 @@ internal sealed class WsSender
             long ms = sw.ElapsedMilliseconds;
 
             Interlocked.Increment(ref _sent);
+            Interlocked.Increment(ref _totSent);
             Interlocked.Add(ref _bytes, message.Length);
+            Interlocked.Add(ref _totBytes, message.Length);
+            if ((message[1] & 1) != 0)
+            {
+                Interlocked.Increment(ref _keys);
+                Interlocked.Increment(ref _totKeys);
+            }
+
+            try { OnVideoSent?.Invoke(message); }
+            catch { /* gravação de diagnóstico nunca derruba o vídeo */ }
+
             long max;
             while (ms > (max = Interlocked.Read(ref _maxSendMs)) &&
                    Interlocked.CompareExchange(ref _maxSendMs, ms, max) != max) { }
@@ -112,7 +134,12 @@ internal sealed class WsSender
         Interlocked.Exchange(ref _dropped, 0),
         Interlocked.Exchange(ref _overflows, 0),
         Interlocked.Exchange(ref _maxSendMs, 0),
-        _video.Reader.Count);
+        _video.Reader.Count,
+        Interlocked.Exchange(ref _keys, 0));
+
+    public VideoTotals Totals => new(
+        Interlocked.Read(ref _totSent), Interlocked.Read(ref _totBytes), Interlocked.Read(ref _totDropped),
+        Interlocked.Read(ref _totOverflows), Interlocked.Read(ref _totKeys));
 
     internal static byte[] BuildVideoMessage(byte[] accessUnit, bool key)
     {

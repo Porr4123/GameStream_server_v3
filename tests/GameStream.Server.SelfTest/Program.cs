@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 using GameStream.Server.Config;
+using GameStream.Server.Diagnostics;
+using Microsoft.Extensions.Logging;
 using GameStream.Server.Net;
 using GameStream.Server.Streaming;
 
@@ -27,6 +29,14 @@ TestAnnexB();
 TestLevels();
 await TestSlowConsumerAsync();
 await TestRealEncoderAsync();
+TestFrameInspector();
+TestVideoProbe();
+TestDiagnosis();
+TestClientActivity();
+await TestFileLoggerAndRecorderAsync();
+await TestSpsAndFfmpegCheckAsync();
+await TestFrozenGameScenarioAsync();
+TestDebugHub();
 
 Console.WriteLine();
 if (failures.Count == 0)
@@ -250,6 +260,338 @@ async Task TestRealEncoderAsync()
 
 // ---------------------------------------------------------------------------------------------
 
+void TestFrameInspector()
+{
+    Section("FrameInspector (preto? parado?)");
+    const int w = 64, h = 48;
+    var black = new byte[w * h * 4];
+    var white = new byte[w * h * 4];
+    Array.Fill(white, (byte)255);
+
+    var sb = FrameInspector.Analyze(black, w, h);
+    var sw = FrameInspector.Analyze(white, w, h);
+    Check(sb.BlackRatio > 0.999, $"quadro preto: {sb.BlackRatio:P0} preto");
+    Check(sw.BlackRatio < 0.001 && sw.MeanLuma > 250, $"quadro branco: {sw.BlackRatio:P0} preto, brilho {sw.MeanLuma:0}");
+
+    // Um pixel que NÃO está na grade de amostragem (1,1 com passo 2) tem que mudar o hash:
+    // senão um jogo que só anima um cantinho seria dado como "parado".
+    var a = new byte[w * h * 4];
+    var b = (byte[])a.Clone();
+    b[(1 * w + 1) * 4 + 2] = 200;
+    Check(FrameInspector.Analyze(a, w, h).Hash != FrameInspector.Analyze(b, w, h).Hash,
+        "mudar 1 pixel fora da grade de amostragem muda o hash");
+
+    var c = (byte[])a.Clone();
+    for (int i = 3; i < c.Length; i += 4) c[i] = 255; // só o canal alfa
+    Check(FrameInspector.Analyze(a, w, h).Hash == FrameInspector.Analyze(c, w, h).Hash, "o canal alfa não conta para o hash");
+
+    var odd = new byte[(w * h + 1) * 4];
+    odd[^2] = 9;
+    Check(FrameInspector.FullHash(odd, odd.Length) != FrameInspector.FullHash(new byte[odd.Length], odd.Length),
+        "o hash vê também os bytes da sobra (tamanho não múltiplo de 8)");
+
+    // BMP: cabeçalho e ordem das cores (BGR, linhas de baixo para cima).
+    var img = new byte[2 * 2 * 4];
+    img[0] = 10; img[1] = 20; img[2] = 30;   // pixel (0,0): B,G,R
+    var bmp = FrameInspector.ToBmp24(img, 2, 2);
+    int rowSize = (2 * 3 + 3) & ~3;
+    Check(bmp[0] == 'B' && bmp[1] == 'M' && bmp.Length == 54 + rowSize * 2, $"BMP tem cabeçalho BM e {bmp.Length} bytes");
+    Check(bmp[54 + rowSize] == 10 && bmp[54 + rowSize + 1] == 20 && bmp[54 + rowSize + 2] == 30,
+        "BMP guarda o pixel de cima na última linha, em ordem B,G,R");
+}
+
+void TestVideoProbe()
+{
+    Section("VideoProbe (há quanto tempo a imagem está igual)");
+    var now = TimeSpan.Zero;
+    var probe = new VideoProbe(64, 48, () => now);
+    var frame = new byte[64 * 48 * 4];
+
+    for (int i = 0; i < 10; i++)
+    {
+        now += TimeSpan.FromSeconds(1);
+        probe.Record(frame, TimeSpan.FromMilliseconds(4));
+    }
+    var snap = probe.Take();
+    Check(snap.Frames == 10 && snap.Changes == 1, $"10 quadros iguais = 1 mudança (a do primeiro): {snap.Changes}");
+    Check(snap.StillSeconds >= 9 && snap.StillSeconds <= 10.1, $"parada há ~9-10 s ({snap.StillSeconds:0.0})");
+    Check(Math.Abs(snap.AvgCaptureMs - 4) < 0.01, "tempo médio de captura");
+    Check(snap.BlackRatio > 0.99, "quadro todo preto é visto como preto");
+
+    frame[100] = 77;
+    now += TimeSpan.FromSeconds(1);
+    probe.Record(frame, TimeSpan.Zero);
+    Check(probe.StillSeconds < 0.5, "qualquer mudança zera o \"parada há\"");
+
+    var again = probe.Take();
+    Check(again.Frames == 1 && again.Changes == 1 && again.TotalFrames == 11 && again.TotalChanges == 2,
+        "Take() zera a janela mas mantém os totais (11 quadros, 2 mudanças)");
+
+    probe.ResetStill();
+    now += TimeSpan.FromSeconds(3);
+    Check(Math.Abs(probe.StillSeconds - 3) < 0.01, "ResetStill recomeça a contagem");
+
+    var latest = probe.LatestFrame();
+    Check(latest is not null && latest.Length == frame.Length && !ReferenceEquals(latest, frame), "guarda uma CÓPIA do quadro recente");
+}
+
+void TestDiagnosis()
+{
+    Section("Diagnóstico automático");
+    var healthy = new DiagInput
+    {
+        FramesSentTotal = 500, GameLaunched = true, GameShown = true, WindowForeground = true,
+        GameCpuPercent = 40, StillSeconds = 0.1, BlackRatio = 0.1
+    };
+    Check(Diagnosis.Evaluate(healthy).Count == 0, "jogo saudável: nenhum aviso");
+
+    string Codes(DiagInput d) => string.Join(",", Diagnosis.Evaluate(d).Select(f => f.Code));
+    Finding Get(DiagInput d, string code) => Diagnosis.Evaluate(d).First(f => f.Code == code);
+
+    var blackStill = healthy with { StillSeconds = 20, BlackRatio = 1.0, GameCpuPercent = 50 };
+    var f1 = Get(blackStill, "IMAGEM_PARADA");
+    Check(f1.Message.Contains("PRETA") && f1.Message.Contains("hideWindow"), "preta+parada: diz que é PRETA e sugere hideWindow=false");
+
+    var idle = healthy with { StillSeconds = 20, GameCpuPercent = 0.2, WindowForeground = false };
+    var f2 = Get(idle, "IMAGEM_PARADA");
+    Check(f2.Message.Contains("ocioso") && f2.Message.Contains("PAUSADO") && f2.Message.Contains("NÃO está em primeiro plano"),
+        "parada + jogo ocioso + sem foco: aponta jogo pausado/sem foco");
+
+    var stale = healthy with { StillSeconds = 20, GameCpuPercent = 60, WindowForeground = true };
+    var f3 = Get(stale, "IMAGEM_PARADA");
+    Check(f3.Message.Contains("ATIVO") && f3.Message.Contains("Chromium"), "parada + jogo ativo: aponta captura devolvendo quadro velho (Chromium/NW.js)");
+
+    Check(!Codes(healthy with { StillSeconds = 3 }).Contains("IMAGEM_PARADA"), "3 s parado ainda não é alarme (tela estática é normal)");
+    Check(Codes(healthy with { WindowHung = true, StillSeconds = 30 }) == "JANELA_TRAVADA", "janela sem resposta: só JANELA_TRAVADA (não duplica com imagem parada)");
+    Check(Codes(healthy with { WindowMinimized = true }).Contains("JANELA_MINIMIZADA"), "janela minimizada");
+    Check(Codes(healthy with { CaptureAttempts = 100, CaptureFailures = 100 }).Contains("CAPTURA_FALHA"), "captura falhando sempre");
+    Check(Codes(healthy with { CaptureAttempts = 100, CaptureFailures = 3 }) == "CAPTURA_FALHA_PARCIAL", "captura falhando às vezes");
+    Check(Codes(healthy with { AvgCaptureMs = 90 }) == "CAPTURA_LENTA", "captura lenta");
+    Check(Codes(healthy with { FramesSentTotal = 0 }).Contains("SEM_VIDEO"), "nenhum quadro enviado");
+    Check(Codes(healthy with { DroppedInWindow = 12 }) == "REDE_LENTA", "descartes por rede lenta");
+    Check(Codes(healthy with { KeysRejected = 5 }).Contains("TECLAS_RECUSADAS"), "teclas recusadas (fora de allowedKeys)");
+
+    var focus = Get(healthy with { FocusFailures = 3, ForegroundWindow = "\"Console\" [ConsoleWindowClass]" }, "SEM_FOCO");
+    Check(focus.Level == FindingLevel.Error && focus.Message.Contains("ConsoleWindowClass"), "foco recusado: erro que diz para ONDE as teclas estão indo");
+
+    var noEffect = stale with { KeysAccepted = 10, SecondsSinceLastKey = 4, StillSeconds = 20 };
+    Check(Codes(noEffect).Contains("TECLA_SEM_EFEITO"), "tecla enviada e imagem não mudou depois: TECLA_SEM_EFEITO");
+    Check(!Codes(stale with { KeysAccepted = 10, SecondsSinceLastKey = 15, StillSeconds = 20 }).Contains("TECLA_SEM_EFEITO") == false,
+        "tecla enviada antes de a imagem parar ainda conta como sem efeito se nada mudou depois");
+    Check(!Codes(stale with { KeysAccepted = 10, SecondsSinceLastKey = 25, StillSeconds = 20 }).Contains("TECLA_SEM_EFEITO"),
+        "tecla de ANTES de a imagem parar não é culpada");
+
+    Check(Codes(blackStill with { GameShown = false }) == "", "tela de espera não gera alarme de imagem");
+    Check(Codes(healthy with { GameShown = false, ProcessAlive = false, WindowExists = false }).Contains("JOGO_FECHOU"), "jogo fechou");
+
+    var hideOff = Get(blackStill with { HideWindow = false }, "IMAGEM_PARADA");
+    Check(hideOff.Message.Contains("captureMode"), "com hideWindow=false já sugere captureMode=screen");
+
+    // ---- tracker: não enche o log ----
+    var tracker = new DiagnosisTracker(TimeSpan.FromSeconds(30));
+    var events = new List<string>();
+    void Emit(Finding fnd, bool resolved) => events.Add((resolved ? "resolvido:" : "novo:") + fnd.Code);
+    var t0 = DateTime.UtcNow;
+    var bad = Diagnosis.Evaluate(blackStill);
+    tracker.Update(bad, t0, Emit);
+    tracker.Update(bad, t0.AddSeconds(5), Emit);
+    tracker.Update(bad, t0.AddSeconds(10), Emit);
+    Check(events.Count == 1 && events[0] == "novo:IMAGEM_PARADA", "mesmo problema 3x seguidas = escrito 1 vez");
+    tracker.Update(bad, t0.AddSeconds(35), Emit);
+    Check(events.Count == 2, "repete depois de 30 s se continuar");
+    tracker.Update(Diagnosis.Evaluate(healthy), t0.AddSeconds(40), Emit);
+    Check(events.Last() == "resolvido:IMAGEM_PARADA", "avisa quando o problema some");
+
+    Console.WriteLine("\n  Exemplo do que o log mostrará (jogo ativo, imagem congelada):");
+    foreach (var fnd in Diagnosis.Evaluate(stale)) Console.WriteLine($"    DIAGNÓSTICO {fnd.Level} [{fnd.Code}] {fnd.Message}");
+}
+
+void TestClientActivity()
+{
+    Section("ClientActivity (o que o celular manda)");
+    var t = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+    var c = new ClientActivity(() => t);
+    Check(c.SecondsSinceLastKey is null, "sem tecla: SecondsSinceLastKey é null");
+
+    int logged = 0;
+    for (int i = 0; i < 30; i++) if (c.CountKey(ClientActivity.KeyResult.Accepted)) logged++;
+    t = t.AddSeconds(7);
+    c.CountKey(ClientActivity.KeyResult.Rejected);
+    c.CountKey(ClientActivity.KeyResult.GameNotReady);
+    t = t.AddSeconds(3);
+
+    Check(logged == 12, "só as 12 primeiras teclas pedem log individual");
+    Check(c.KeysAccepted == 30 && c.KeysRejected == 1 && c.KeysBeforeGame == 1, "contagem por resultado");
+    Check(Math.Abs((c.SecondsSinceLastKey ?? -1) - 3) < 0.01, "segundos desde a última tecla");
+    Check(c.CountOther("xyz") && !c.CountOther("xyz"), "tipo desconhecido avisa só na 1ª vez");
+    Check(c.ToString().Contains("30 aceitas") && c.ToString().Contains("xyz×2"), "resumo legível: " + c);
+}
+
+async Task TestFileLoggerAndRecorderAsync()
+{
+    Section("Log em arquivo e gravação de diagnóstico");
+    var dir = Path.Combine(Path.GetTempPath(), "gamestream-selftest-diag-" + Environment.ProcessId);
+    try
+    {
+        var logPath = Path.Combine(dir, "sub", "servidor.log");
+        using (var provider = new FileLoggerProvider(logPath))
+        {
+            Check(provider.IsActive, "cria a pasta e abre o arquivo de log");
+            var logger = provider.CreateLogger("Teste");
+            logger.LogInformation("olá {Nome}", "mundo");
+            logger.LogError(new InvalidOperationException("boom"), "falhou");
+            await Task.WhenAll(Enumerable.Range(0, 8).Select(n => Task.Run(() =>
+            {
+                for (int i = 0; i < 50; i++) logger.LogWarning("linha {N}-{I}", n, i);
+            })));
+        }
+        var lines = await File.ReadAllLinesAsync(logPath);
+        Check(lines.Any(l => l.Contains("INF olá mundo")), "linha de informação com horário e nível");
+        Check(lines.Any(l => l.Contains("ERRO falhou")) && lines.Any(l => l.Contains("InvalidOperationException: boom")), "erro com a exceção");
+        Check(lines.Count(l => l.Contains("AVISO linha ")) == 400, "400 linhas de 8 threads sem perder nem misturar");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(lines[0], @"^\d\d:\d\d:\d\d\.\d{3} "), "toda linha começa com o horário");
+
+        var broken = new FileLoggerProvider(Path.Combine(dir, new string('x', 400) + "\0", "a.log"));
+        broken.CreateLogger("x").LogInformation("não pode derrubar nada");
+        Check(!broken.IsActive, "pasta impossível: desliga o log em arquivo sem lançar exceção");
+
+        // gravador
+        var log = provider_Null();
+        var rec = new SessionRecorder(dir, "t1", new DiagnosticsOptions { DumpH264Seconds = 60, SaveFrames = true }, log);
+        rec.WriteVideo(new byte[] { 1, 1, 0, 0, 0, 1, 0x65, 0xAA });
+        rec.WriteVideo(new byte[] { 1, 0, 0, 0, 1, 0x41, 0xBB });
+        var bgra = new byte[8 * 8 * 4];
+        var bmpPath = rec.SaveFrame("teste", bgra, 8, 8);
+        rec.Dispose();
+        var dumped = await File.ReadAllBytesAsync(rec.VideoPath);
+        Check(dumped.SequenceEqual(new byte[] { 0, 0, 0, 1, 0x65, 0xAA, 0, 0, 1, 0x41, 0xBB }),
+            "o .h264 contém só o H.264 (sem os 2 bytes de cabeçalho de cada mensagem)");
+        Check(bmpPath is not null && File.Exists(bmpPath) && new FileInfo(bmpPath).Length == 54 + ((8 * 3 + 3) & ~3) * 8, "quadro .bmp salvo");
+
+        var off = new SessionRecorder(dir, "t2", new DiagnosticsOptions { DumpH264Seconds = 0, SaveFrames = false }, log);
+        off.WriteVideo(new byte[] { 1, 1, 0, 0, 1, 0x65, 1 });
+        Check(!File.Exists(off.VideoPath) && off.SaveFrame("x", bgra, 8, 8) is null, "DumpH264Seconds=0 e SaveFrames=false não gravam nada");
+
+        // limpeza
+        var old = Path.Combine(dir, "velho.log");
+        await File.WriteAllTextAsync(old, "x");
+        File.SetLastWriteTime(old, DateTime.Now.AddDays(-30));
+        Check(DiagnosticsCleaner.Cleanup(dir, 7) == 1 && !File.Exists(old), "apaga só o que é mais velho que KeepDays");
+    }
+    finally
+    {
+        try { Directory.Delete(dir, true); } catch { /* ignora */ }
+    }
+
+    static ILogger provider_Null() => Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+}
+
+async Task TestSpsAndFfmpegCheckAsync()
+{
+    Section("SPS do fluxo e checagem do ffmpeg");
+    var ffmpeg = FindTool("ffmpeg");
+    if (ffmpeg is null) { Console.WriteLine("  ffmpeg não encontrado: parte ignorada."); return; }
+
+    var check = await FfmpegCheck.RunAsync(ffmpeg);
+    Check(check.Found && check.HasX264 && check.Version.StartsWith("ffmpeg version"), $"ffmpeg ok, com libx264 ({check.Version})");
+    var missing = await FfmpegCheck.RunAsync(Path.Combine(Path.GetTempPath(), "nao-existe-ffmpeg"));
+    Check(!missing.Found && missing.Error is { Length: > 0 }, "ffmpeg inexistente é reportado com a causa");
+
+    foreach (var (w, h, level) in new[] { (640, 480, 31), (854, 480, 31), (1280, 720, 31), (1920, 1080, 40) })
+    {
+        var psi = new ProcessStartInfo(ffmpeg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "-v", "error", "-f", "lavfi", "-i", $"testsrc=size={w}x{h}:rate=30", "-frames:v", "1", "-vf", "format=yuv420p", "-c:v", "libx264",
+                     "-profile:v", "baseline", "-level:v", level == 31 ? "3.1" : "4.0", "-x264-params", "aud=1:repeat-headers=1", "-f", "h264", "pipe:1" })
+            psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        using var ms = new MemoryStream();
+        await p.StandardOutput.BaseStream.CopyToAsync(ms);
+        await p.WaitForExitAsync();
+
+        var sps = H264Info.ParseSps(ms.ToArray());
+        Check(sps is { } s && s.Width == w && s.Height == h && s.ProfileIdc == 66 && s.LevelIdc == level,
+            $"SPS de {w}x{h}: " + (sps?.ToString() ?? "ilegível"));
+    }
+
+    // O mesmo parser tem que achar o SPS dentro de uma mensagem inteira do WebSocket: [1][flags][...]
+    var one = new byte[] { 1, 1, 0, 0, 0, 1, 0x67, 0x42, 0xC0, 0x1F, 0xDA, 0x05, 0x07, 0xE8, 0x40, 0, 0, 0, 1, 0x68, 0xCE, 0x3C, 0x80 };
+    var parsed = H264Info.ParseSps(one);
+    Check(parsed is { ProfileIdc: 66, LevelIdc: 31 } && parsed.Value.ToString().Contains("avc1.42C01F"),
+        "acha o SPS atrás do cabeçalho da mensagem e monta o codec avc1.42C01F");
+    Check(H264Info.ParseSps(new byte[] { 0, 0, 0, 1, 0x67, 0x42 }) is null, "SPS truncado devolve null em vez de quebrar");
+    Check(H264Info.ParseSps(new byte[] { 0, 0, 0, 1, 0x65, 0x88 }) is null, "quadro sem SPS devolve null");
+}
+
+async Task TestFrozenGameScenarioAsync()
+{
+    Section("Cenário do seu log: o jogo abre e a imagem congela");
+    var ffmpeg = FindTool("ffmpeg");
+    if (ffmpeg is null) { Console.WriteLine("  ffmpeg não encontrado: parte ignorada."); return; }
+
+    const int w = 640, h = 480, fps = 30;
+    var ws = new FakeWebSocket();
+    var sender = new WsSender(ws, 30);
+    int hookCalls = 0;
+    sender.OnVideoSent = _ => Interlocked.Increment(ref hookCalls);
+
+    var source = new FreezingSource(w, h, TimeSpan.FromSeconds(2));
+    var probe = new VideoProbe(w, h);
+    var encoder = new FfmpegEncoder(ffmpeg, source, new GameProfile { BitrateKbps = 2000 }, fps, 0, null, probe);
+
+    using var cts = new CancellationTokenSource();
+    var videoTask = sender.RunVideoAsync(cts.Token);
+    var encTask = encoder.RunAsync(sender.EnqueueVideo, cts.Token);
+
+    await Task.Delay(TimeSpan.FromSeconds(2.2));
+    var moving = sender.TakeStats();
+    var movingProbe = probe.Take();
+    await Task.Delay(TimeSpan.FromSeconds(4));
+    var frozen = sender.TakeStats();
+    var frozenProbe = probe.Take();
+
+    cts.Cancel();
+    encoder.Dispose();
+    foreach (var t in new[] { encTask, videoTask })
+        try { await t; } catch (OperationCanceledException) { }
+
+    double movingKbps = moving.BytesSent * 8 / 1000 / 2.2;
+    double frozenKbps = frozen.BytesSent * 8 / 1000 / 4.0;
+    Console.WriteLine($"  com movimento: {movingKbps:0} kbps, mudou em {movingProbe.Changes}/{movingProbe.Frames} quadros");
+    Console.WriteLine($"  congelado    : {frozenKbps:0} kbps, mudou em {frozenProbe.Changes}/{frozenProbe.Frames} quadros, igual há {frozenProbe.StillSeconds:0.0} s");
+
+    Check(frozenKbps < 150, $"imagem congelada cai para poucos kbps ({frozenKbps:0}) - a mesma assinatura do seu log (96-196 kbps)");
+    Check(frozen.FramesSent >= 4 * fps * 0.8, "mesmo congelado o vídeo continua saindo a ~30 quadros/s (o servidor NÃO parou)");
+    Check(movingProbe.Changes > movingProbe.Frames / 2, "a sonda vê a imagem mudando enquanto há movimento");
+    Check(frozenProbe.Changes <= 1 && frozenProbe.StillSeconds >= 3, "a sonda percebe que a imagem congelou e há quanto tempo");
+    Check(hookCalls == sender.Totals.FramesSent && hookCalls > 0, $"OnVideoSent foi chamado para cada quadro enviado ({hookCalls})");
+    Check(sender.Totals.KeyframesSent >= 5 && sender.Totals.BytesSent > 0, $"totais da sessão: {sender.Totals.KeyframesSent} keyframes");
+
+    // Com o tempo que a sonda mediu (escalado para além do limiar), o diagnóstico acusa exatamente isso.
+    var verdict = Diagnosis.Evaluate(new DiagInput
+    {
+        FramesSentTotal = sender.Totals.FramesSent, GameLaunched = true, GameShown = true, GameCpuPercent = 35,
+        StillSeconds = Math.Max(frozenProbe.StillSeconds, Diagnosis.StillThresholdSeconds), BlackRatio = frozenProbe.BlackRatio,
+        PrintWindowMode = true, HideWindow = true
+    });
+    Check(verdict.Any(f => f.Code == "IMAGEM_PARADA"), "o diagnóstico emite IMAGEM_PARADA para este cenário");
+}
+
+void TestDebugHub()
+{
+    Section("DebugHub (/debug)");
+    Check(DebugHub.Status.Contains("Nenhuma sessão"), "sem sessão: mensagem de espera");
+
+    string a = "sessão A";
+    using (DebugHub.Begin(() => a, () => (new byte[16], 2, 2)))
+    {
+        Check(DebugHub.Status == "sessão A" && DebugHub.Frame is { W: 2, H: 2 }, "durante a sessão devolve o estado e o quadro");
+        using var b = DebugHub.Begin(() => "sessão B", () => null);
+        Check(DebugHub.Status == "sessão B", "uma sessão nova assume a página");
+    }
+    Check(DebugHub.Status.Contains("sessão encerrada") == false || DebugHub.Status.Contains("sessão B"), "encerrar a sessão A não apaga a B");
+    Check(DebugHub.Frame is null, "sem sessão ativa não há quadro");
+}
+
 static string? FindTool(string name)
 {
     var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
@@ -363,6 +705,31 @@ sealed class SyntheticSource : IFrameSource
                 _frame[o] = _frame[o + 1] = _frame[o + 2] = 255;
             }
         return _frame;
+    }
+}
+
+/// <summary>Imagem que se mexe por um tempo e depois CONGELA, como um jogo que trava logo depois de abrir.</summary>
+sealed class FreezingSource : IFrameSource
+{
+    private readonly SyntheticSource _inner;
+    private readonly TimeSpan _freezeAfter;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+
+    public FreezingSource(int width, int height, TimeSpan freezeAfter)
+    {
+        _inner = new SyntheticSource(width, height);
+        _freezeAfter = freezeAfter;
+    }
+
+    public int Width => _inner.Width;
+    public int Height => _inner.Height;
+
+    private byte[]? _frozen;
+
+    public byte[] NextFrame()
+    {
+        if (_clock.Elapsed < _freezeAfter) return _inner.NextFrame();
+        return _frozen ??= (byte[])_inner.NextFrame().Clone();
     }
 }
 

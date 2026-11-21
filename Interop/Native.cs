@@ -91,6 +91,8 @@ internal static class Native
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     /// <summary>true se a janela não processa mensagens há alguns segundos (não bloqueia, ao contrário de PrintWindow).</summary>
     [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
@@ -126,6 +128,18 @@ internal static class Native
     {
         if (IntPtr.Size == 8) SetWindowLongPtr64(hWnd, index, (IntPtr)value);
         else SetWindowLong32(hWnd, index, (int)value);
+    }
+
+    public static string GetClass(IntPtr hWnd)
+    {
+        var sb = new StringBuilder(256);
+        return GetClassName(hWnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
+    }
+
+    public static uint GetOwnerPid(IntPtr hWnd)
+    {
+        GetWindowThreadProcessId(hWnd, out uint pid);
+        return pid;
     }
 
     public static string GetTitle(IntPtr hWnd)

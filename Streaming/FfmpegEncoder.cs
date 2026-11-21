@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using GameStream.Server.Config;
+using GameStream.Server.Diagnostics;
 
 namespace GameStream.Server.Streaming;
 
@@ -23,12 +24,14 @@ internal sealed class FfmpegEncoder : IDisposable
     private readonly int _fps;
     private readonly ulong _affinityMask;
     private readonly ILogger? _log;
+    private readonly VideoProbe? _probe;
     private Process? _process;
 
     /// <param name="affinityMask">Núcleos permitidos ao ffmpeg (os que o jogo não usa). 0 = sem restrição.</param>
     public FfmpegEncoder(string ffmpegPath, IFrameSource source, GameProfile profile, int fps, ulong affinityMask,
-        ILogger? log = null)
+        ILogger? log = null, VideoProbe? probe = null)
     {
+        _probe = probe;
         _ffmpegPath = ffmpegPath;
         _source = source;
         _profile = profile;
@@ -71,13 +74,19 @@ internal sealed class FfmpegEncoder : IDisposable
             catch { /* sem permissão: segue sem restrição */ }
         }
 
+        _log?.LogInformation("ffmpeg iniciado (pid {Pid}): {Path} {Args}", process.Id, _ffmpegPath,
+            string.Join(' ', psi.ArgumentList.Select(a => a.Contains(' ') ? $"\"{a}\"" : a)));
+
         _ = Task.Run(async () =>
         {
             try
             {
                 string? line;
                 while ((line = await process.StandardError.ReadLineAsync()) != null)
-                    Console.WriteLine($"[ffmpeg] {line}");
+                {
+                    if (_log is not null) _log.LogWarning("[ffmpeg] {Line}", line);
+                    else Console.WriteLine($"[ffmpeg] {line}");
+                }
             }
             catch { /* processo encerrado */ }
         });
@@ -92,7 +101,17 @@ internal sealed class FfmpegEncoder : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 int n = await stdout.ReadAsync(buffer, ct);
-                if (n == 0) break; // ffmpeg terminou
+                if (n == 0) // ffmpeg terminou
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        string code = "?";
+                        try { if (process.WaitForExit(2000)) code = process.ExitCode.ToString(); } catch { /* ignora */ }
+                        _log?.LogError("O ffmpeg TERMINOU sozinho (código de saída {Code}). Sem ele não há vídeo: a sessão será encerrada. " +
+                                       "Veja as linhas [ffmpeg] acima para o motivo.", code);
+                    }
+                    break;
+                }
 
                 foreach (var au in splitter.Push(buffer, n))
                     onAccessUnit(au);
@@ -120,6 +139,7 @@ internal sealed class FfmpegEncoder : IDisposable
                 var before = clock.Elapsed;
                 var frame = _source.NextFrame();
                 var took = clock.Elapsed - before;
+                _probe?.Record(frame, took);
 
                 if (took > SlowCapture && (lastWarn == TimeSpan.MinValue || clock.Elapsed - lastWarn > TimeSpan.FromSeconds(5)))
                 {

@@ -22,6 +22,9 @@ public sealed class LaunchedGame : IDisposable
     public string WindowTitle { get; }
     public ResourceLimits Limits { get; }
 
+    /// <summary>CPU acumulada e processos vivos de todo o job do jogo. null depois que o jogo é encerrado.</summary>
+    internal (TimeSpan Cpu, int ActiveProcesses)? GetAccounting() => _job.GetAccounting();
+
     public void Dispose()
     {
         try { if (!Process.HasExited) Process.Kill(entireProcessTree: true); } catch { /* ignora */ }
