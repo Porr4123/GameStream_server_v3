@@ -33,11 +33,16 @@ internal sealed class WindowHider
     }
 
     /// <summary>Chamar de tempos em tempos: alguns jogos se recentralizam sozinhos.</summary>
-    public void EnsureHidden()
+    /// <returns>true se o jogo tinha se reposicionado e a janela precisou ser escondida de novo.</returns>
+    public bool EnsureHidden()
     {
-        if (!Native.IsWindow(_hwnd)) return;
+        if (!Native.IsWindow(_hwnd)) return false;
         if (Native.GetWindowRect(_hwnd, out var r) && r.Left > OffX + 5000)
+        {
             MoveOffscreen();
+            return true;
+        }
+        return false;
     }
 
     private void StyleAsToolWindow()

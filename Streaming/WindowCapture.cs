@@ -12,6 +12,9 @@ internal enum CaptureMethod
     Screen
 }
 
+/// <summary>Contadores da captura desde a última leitura.</summary>
+internal readonly record struct CaptureCounters(long Attempts, long Failures, long HungSkips, long TotalAttempts, long TotalFailures);
+
 /// <summary>
 /// Captura só a área do jogo (sem borda nem barra de título) e a desenha, redimensionada,
 /// em outro contexto de desenho (o quadro que vai para o codificador).
@@ -26,6 +29,9 @@ internal sealed class WindowCapture : IDisposable
     private readonly IntPtr _oldBitmap;
     private readonly IntPtr _bits;
 
+    private long _attempts, _failures, _hungSkips, _totalAttempts, _totalFailures;
+
+    public CaptureMethod Method => _method;
     public int Width { get; }
     public int Height { get; }
 
@@ -76,12 +82,39 @@ internal sealed class WindowCapture : IDisposable
         _oldBitmap = Native.SelectObject(_memDc, _bitmap);
     }
 
+    /// <summary>
+    /// Lê e zera os contadores. Chamar com o mesmo lock de <see cref="DrawTo"/> (o FrameComposer cuida disso).
+    /// Failures = o Windows disse que a captura FALHOU (PrintWindow/BitBlt devolveram false).
+    /// </summary>
+    public CaptureCounters TakeCounters()
+    {
+        var c = new CaptureCounters(_attempts, _failures, _hungSkips, _totalAttempts, _totalFailures);
+        _attempts = _failures = _hungSkips = 0;
+        return c;
+    }
+
     /// <summary>Captura um quadro do jogo e o desenha (redimensionado) no retângulo indicado de destDc.</summary>
     public void DrawTo(IntPtr destDc, int dx, int dy, int dw, int dh)
     {
         if (_method == CaptureMethod.PrintWindow)
         {
-            Native.PrintWindow(_hwnd, _memDc, Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT);
+            // PrintWindow espera o jogo responder e não tem limite de tempo: com a janela travada ele prenderia a
+            // captura (e, com ela, todo o vídeo). Se o Windows já considera a janela sem resposta, repete a última
+            // imagem capturada: o vídeo continua fluindo e volta ao normal sozinho quando o jogo destravar.
+            if (Native.IsHungAppWindow(_hwnd))
+            {
+                _hungSkips++;
+            }
+            else
+            {
+                _attempts++;
+                _totalAttempts++;
+                if (!Native.PrintWindow(_hwnd, _memDc, Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT))
+                {
+                    _failures++;
+                    _totalFailures++;
+                }
+            }
         }
         else
         {
@@ -91,8 +124,14 @@ internal sealed class WindowCapture : IDisposable
             IntPtr screen = Native.GetDC(IntPtr.Zero);
             try
             {
-                Native.BitBlt(_memDc, 0, 0, Width, Height, screen, origin.X, origin.Y,
-                    Native.SRCCOPY | Native.CAPTUREBLT);
+                _attempts++;
+                _totalAttempts++;
+                if (!Native.BitBlt(_memDc, 0, 0, Width, Height, screen, origin.X, origin.Y,
+                        Native.SRCCOPY | Native.CAPTUREBLT))
+                {
+                    _failures++;
+                    _totalFailures++;
+                }
             }
             finally
             {

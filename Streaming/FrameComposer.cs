@@ -9,7 +9,7 @@ namespace GameStream.Server.Streaming;
 ///  - jogo: a captura da janela, redimensionada e centralizada (sem distorcer a proporção).
 /// Como o tamanho nunca muda, o cliente recebe vídeo desde o primeiro instante, com ou sem jogo.
 /// </summary>
-internal sealed class FrameComposer : IDisposable
+internal sealed class FrameComposer : IFrameSource, IDisposable
 {
     private readonly object _lock = new();
     private readonly int _w;
@@ -83,12 +83,24 @@ internal sealed class FrameComposer : IDisposable
         }
     }
 
-    /// <summary>Passa a mostrar o jogo. Se falhar (ex.: janela minimizada), a tela atual continua.</summary>
-    public void ShowGame(IntPtr hwnd, CaptureMethod method)
+    /// <summary>true enquanto o que vai para o vídeo é a captura do jogo (e não a tela de espera).</summary>
+    public bool HasGame
+    {
+        get { lock (_lock) return _capture is not null; }
+    }
+
+    /// <summary>Contadores da captura desde a última leitura. Zerado se não há jogo.</summary>
+    public CaptureCounters TakeCaptureCounters()
+    {
+        lock (_lock) return _capture?.TakeCounters() ?? default;
+    }
+
+    /// <summary>Passa a mostrar o jogo. Se falhar (ex.: janela minimizada), a tela atual continua. Devolve um texto descrevendo o enquadramento.</summary>
+    public string ShowGame(IntPtr hwnd, CaptureMethod method)
     {
         lock (_lock)
         {
-            if (_disposed) return;
+            if (_disposed) return "composição já encerrada";
 
             var capture = new WindowCapture(hwnd, method);
 
@@ -102,6 +114,8 @@ internal sealed class FrameComposer : IDisposable
             _capture?.Dispose();
             _capture = capture;
             Native.PatBlt(_dc, 0, 0, _w, _h, Native.BLACKNESS);
+
+            return $"captura {capture.Width}x{capture.Height} ({method}) -> {_dw}x{_dh} em ({_dx},{_dy}) dentro de {_w}x{_h}";
         }
     }
 

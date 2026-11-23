@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using GameStream.Server.Config;
+using GameStream.Server.Diagnostics;
 
 namespace GameStream.Server.Streaming;
 
@@ -11,24 +12,39 @@ namespace GameStream.Server.Streaming;
 /// </summary>
 internal sealed class FfmpegEncoder : IDisposable
 {
+    /// <summary>Intervalo entre keyframes. Curto de propósito: depois de um descarte por rede lenta, o vídeo volta em até 1 s.</summary>
+    public const int KeyframeIntervalSeconds = 1;
+
+    /// <summary>Captura que demora mais que isso gera aviso no log (janela do jogo travada ou muito pesada).</summary>
+    private static readonly TimeSpan SlowCapture = TimeSpan.FromMilliseconds(250);
+
     private readonly string _ffmpegPath;
-    private readonly FrameComposer _composer;
+    private readonly IFrameSource _source;
     private readonly GameProfile _profile;
     private readonly int _fps;
     private readonly ulong _affinityMask;
+    private readonly ILogger? _log;
+    private readonly VideoProbe? _probe;
     private Process? _process;
 
     /// <param name="affinityMask">Núcleos permitidos ao ffmpeg (os que o jogo não usa). 0 = sem restrição.</param>
-    public FfmpegEncoder(string ffmpegPath, FrameComposer composer, GameProfile profile, int fps, ulong affinityMask)
+    public FfmpegEncoder(string ffmpegPath, IFrameSource source, GameProfile profile, int fps, ulong affinityMask,
+        ILogger? log = null, VideoProbe? probe = null)
     {
+        _probe = probe;
         _ffmpegPath = ffmpegPath;
-        _composer = composer;
+        _source = source;
         _profile = profile;
         _fps = Math.Max(1, fps);
         _affinityMask = affinityMask;
+        _log = log;
     }
 
-    public async Task RunAsync(Func<byte[], Task> onAccessUnit, CancellationToken ct)
+    /// <summary>
+    /// Roda até o ffmpeg terminar ou o token ser cancelado. <paramref name="onAccessUnit"/> recebe um quadro por vez
+    /// e NÃO pode bloquear: se bloquear, o ffmpeg para de ser lido e o atraso cresce.
+    /// </summary>
+    public async Task RunAsync(Action<byte[]> onAccessUnit, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(_ffmpegPath)
         {
@@ -38,7 +54,8 @@ internal sealed class FfmpegEncoder : IDisposable
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        foreach (var arg in BuildArgs()) psi.ArgumentList.Add(arg);
+        foreach (var arg in BuildArgs(_source.Width, _source.Height, _fps, _profile.BitrateKbps))
+            psi.ArgumentList.Add(arg);
 
         Process process;
         try
@@ -57,13 +74,19 @@ internal sealed class FfmpegEncoder : IDisposable
             catch { /* sem permissão: segue sem restrição */ }
         }
 
+        _log?.LogInformation("ffmpeg iniciado (pid {Pid}): {Path} {Args}", process.Id, _ffmpegPath,
+            string.Join(' ', psi.ArgumentList.Select(a => a.Contains(' ') ? $"\"{a}\"" : a)));
+
         _ = Task.Run(async () =>
         {
             try
             {
                 string? line;
                 while ((line = await process.StandardError.ReadLineAsync()) != null)
-                    Console.WriteLine($"[ffmpeg] {line}");
+                {
+                    if (_log is not null) _log.LogWarning("[ffmpeg] {Line}", line);
+                    else Console.WriteLine($"[ffmpeg] {line}");
+                }
             }
             catch { /* processo encerrado */ }
         });
@@ -78,10 +101,20 @@ internal sealed class FfmpegEncoder : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 int n = await stdout.ReadAsync(buffer, ct);
-                if (n == 0) break; // ffmpeg terminou
+                if (n == 0) // ffmpeg terminou
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        string code = "?";
+                        try { if (process.WaitForExit(2000)) code = process.ExitCode.ToString(); } catch { /* ignora */ }
+                        _log?.LogError("O ffmpeg TERMINOU sozinho (código de saída {Code}). Sem ele não há vídeo: a sessão será encerrada. " +
+                                       "Veja as linhas [ffmpeg] acima para o motivo.", code);
+                    }
+                    break;
+                }
 
                 foreach (var au in splitter.Push(buffer, n))
-                    await onAccessUnit(au);
+                    onAccessUnit(au);
             }
         }
         finally
@@ -99,10 +132,23 @@ internal sealed class FfmpegEncoder : IDisposable
             var interval = TimeSpan.FromSeconds(1.0 / _fps);
             var clock = Stopwatch.StartNew();
             long count = 0;
+            var lastWarn = TimeSpan.MinValue;
 
             while (!ct.IsCancellationRequested)
             {
-                var frame = _composer.NextFrame();
+                var before = clock.Elapsed;
+                var frame = _source.NextFrame();
+                var took = clock.Elapsed - before;
+                _probe?.Record(frame, took);
+
+                if (took > SlowCapture && (lastWarn == TimeSpan.MinValue || clock.Elapsed - lastWarn > TimeSpan.FromSeconds(5)))
+                {
+                    lastWarn = clock.Elapsed;
+                    _log?.LogWarning(
+                        "A captura do quadro levou {Ms} ms. O jogo pode estar travado, carregando ou pesado demais para a captura.",
+                        (long)took.TotalMilliseconds);
+                }
+
                 await stdin.WriteAsync(frame, ct);
                 await stdin.FlushAsync(ct);
                 count++;
@@ -116,6 +162,7 @@ internal sealed class FfmpegEncoder : IDisposable
                 {
                     clock.Restart(); // ficou muito atrasado: recomeça o ritmo em vez de mandar rajada
                     count = 0;
+                    lastWarn = TimeSpan.MinValue;
                 }
             }
         }
@@ -125,9 +172,11 @@ internal sealed class FfmpegEncoder : IDisposable
         }
     }
 
-    private List<string> BuildArgs()
+    /// <summary>Argumentos do ffmpeg. Separado para o autoteste conferir exatamente o que o servidor usa.</summary>
+    internal static List<string> BuildArgs(int width, int height, int fps, int bitrateKbps)
     {
-        int kbps = Math.Max(200, _profile.BitrateKbps);
+        int kbps = Math.Max(200, bitrateKbps);
+        fps = Math.Max(1, fps);
 
         return new List<string>
         {
@@ -135,20 +184,27 @@ internal sealed class FfmpegEncoder : IDisposable
 
             // Entrada: quadros BGRA brutos pelo stdin (o canal alfa é ignorado: bgr0).
             "-f", "rawvideo", "-pixel_format", "bgr0",
-            "-video_size", $"{_composer.Width}x{_composer.Height}",
-            "-framerate", _fps.ToString(), "-i", "pipe:0",
+            "-video_size", $"{width}x{height}",
+            "-framerate", fps.ToString(), "-i", "pipe:0",
 
             "-vf", "format=yuv420p",
 
-            // Saída: H.264 baseline, sem B-frames, AUD em todo quadro, SPS/PPS em todo keyframe.
+            // Saída: H.264 baseline, sem B-frames, SPS/PPS em todo keyframe.
+            // - nível calculado pela resolução/fps (e não fixo);
+            // - 1 thread = 1 slice por quadro: o fluxo mais simples possível para decodificadores de celular;
+            // - AUD em todo quadro só para o servidor separar os quadros (ele é removido antes de ir para o cliente).
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-profile:v", "baseline", "-level:v", "3.1",
-            "-bf", "0", "-g", (_fps * 2).ToString(),
+            "-profile:v", "baseline", "-level:v", H264Level.For(width, height, fps),
+            "-threads", "1",
+            "-bf", "0", "-g", (fps * KeyframeIntervalSeconds).ToString(),
             "-b:v", $"{kbps}k", "-maxrate", $"{kbps}k", "-bufsize", $"{kbps / 2}k",
-            "-x264-params", "aud=1:repeat-headers=1",
+            "-x264-params", "aud=1:repeat-headers=1:slices=1",
 
             // Remove as mensagens SEI do x264 (texto de versão): alguns decodificadores de celular implicam com elas.
             "-bsf:v", "filter_units=remove_types=6",
+
+            // Cada pacote sai do pipe na hora, sem esperar o buffer do ffmpeg encher.
+            "-flush_packets", "1",
 
             "-f", "h264", "pipe:1"
         };

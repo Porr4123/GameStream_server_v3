@@ -7,4 +7,12 @@
     <RootNamespace>GameStream.Server</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- O autoteste (tests/) é outro projeto: não deixa os arquivos dele entrarem na compilação do servidor. -->
+    <Compile Remove="tests/**" />
+    <Content Remove="tests/**" />
+    <None Remove="tests/**" />
+    <InternalsVisibleTo Include="GameStream.Server.SelfTest" />
+  </ItemGroup>
+
 </Project>

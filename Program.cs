@@ -1,5 +1,7 @@
+using System.Net;
 using System.Security.Cryptography;
 using GameStream.Server.Config;
+using GameStream.Server.Diagnostics;
 using GameStream.Server.Net;
 
 // ---- Comando: dotnet run -- novo "Nome do Jogo"  (cria uma pasta esqueleto e sai) ----
@@ -30,6 +32,29 @@ if (string.IsNullOrWhiteSpace(options.Pin))
     options.Pin = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
 
 builder.WebHost.UseUrls($"http://0.0.0.0:{options.Port}");
+
+// ---- Log: console com horário + arquivo em diagnostico\ (para mandar inteiro quando precisar de ajuda) ----
+var diagOptions = options.Diagnostics;
+var diagDir = diagOptions.ResolveDir(builder.Environment.ContentRootPath);
+FileLoggerProvider? fileLog = null;
+
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(o =>
+{
+    o.SingleLine = true;
+    o.TimestampFormat = "HH:mm:ss.fff ";
+});
+if (diagOptions.Enabled)
+{
+    DiagnosticsCleaner.Cleanup(diagDir, diagOptions.KeepDays);
+    if (diagOptions.FileLog)
+    {
+        fileLog = new FileLoggerProvider(Path.Combine(diagDir, $"servidor-{DateTime.Now:yyyyMMdd-HHmmss}.log"));
+        if (fileLog.IsActive) builder.Logging.AddProvider(fileLog);
+        else fileLog = null;
+    }
+}
+
 var app = builder.Build();
 
 var root = app.Environment.ContentRootPath;
@@ -40,6 +65,21 @@ if (!File.Exists(ffmpeg))
     app.Logger.LogWarning("ffmpeg não encontrado em {Path}. Vou tentar o ffmpeg do PATH.", ffmpeg);
     ffmpeg = "ffmpeg";
 }
+
+// Sem ffmpeg ou sem libx264 não existe vídeo nenhum: melhor descobrir na partida do que na primeira conexão.
+var ffcheck = await FfmpegCheck.RunAsync(ffmpeg);
+if (!ffcheck.Found)
+    app.Logger.LogError("Não consegui executar o ffmpeg ({Path}): {Error}. Instale-o ou ajuste Server:FfmpegPath no appsettings.json.",
+        ffmpeg, ffcheck.Error);
+else if (!ffcheck.HasX264)
+    app.Logger.LogError("Este ffmpeg NÃO tem o codificador libx264 ({Version}). O servidor precisa dele para gerar o vídeo: use um build \"full\" ou \"gpl\".",
+        ffcheck.Version);
+else
+    app.Logger.LogInformation("ffmpeg: {Version} (libx264: sim)", ffcheck.Version);
+
+app.Logger.LogInformation("Ambiente: {Os}, .NET {Net}, {Cpus} núcleo(s) lógico(s); sessão do Windows interativa: {Interactive}",
+    System.Runtime.InteropServices.RuntimeInformation.OSDescription, Environment.Version, Environment.ProcessorCount,
+    Environment.UserInteractive);
 
 var gamesDir = options.ResolveGamesDir();
 GameFolderSkeleton.EnsureRoot(gamesDir);
@@ -58,6 +98,35 @@ app.UseDefaultFiles();
 app.UseStaticFiles();   // wwwroot/test.html
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(10) });
 
+// ---- Diagnóstico ao vivo: só abre no próprio PC (a imagem do jogo não deve vazar para a rede) ----
+static bool IsLocalRequest(HttpContext ctx)
+{
+    var remote = ctx.Connection.RemoteIpAddress;
+    if (remote is null) return false;
+    if (IPAddress.IsLoopback(remote)) return true;
+    var local = ctx.Connection.LocalIpAddress;
+    return local is not null && remote.Equals(local); // o PC acessando pelo próprio IP da rede
+}
+
+if (diagOptions.Enabled && diagOptions.DebugPage)
+{
+    app.MapGet("/debug", (HttpContext ctx) =>
+        IsLocalRequest(ctx) ? Results.Content(DebugHub.Page, "text/html; charset=utf-8") : Results.NotFound());
+
+    app.MapGet("/debug/status", (HttpContext ctx) =>
+        IsLocalRequest(ctx) ? Results.Text(DebugHub.Status, "text/plain; charset=utf-8") : Results.NotFound());
+
+    app.MapGet("/debug/frame.bmp", (HttpContext ctx) =>
+    {
+        if (!IsLocalRequest(ctx)) return Results.NotFound();
+        var frame = DebugHub.Frame;
+        if (frame is null) return Results.NoContent();
+
+        ctx.Response.Headers.CacheControl = "no-store";
+        return Results.Bytes(GameStream.Server.Streaming.FrameInspector.ToBmp24(frame.Value.Bgra, frame.Value.W, frame.Value.H), "image/bmp");
+    });
+}
+
 // Lista de jogos e layouts padrão: GET /games?pin=123456  (relê as pastas: jogos novos aparecem sozinhos)
 app.MapGet("/games", (HttpContext ctx) =>
 {
@@ -73,17 +142,36 @@ app.MapGet("/games", (HttpContext ctx) =>
 app.MapGet("/stream", async (HttpContext ctx) =>
 {
     if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
-    if (!Auth.Check(ctx, options)) { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return; }
+    if (!Auth.Check(ctx, options))
+    {
+        app.Logger.LogWarning("Conexão de {Ip} recusada (401): PIN incorreto ou ausente.", ctx.Connection.RemoteIpAddress);
+        ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
 
     profiles.Load(); // pega edições do game.json sem reiniciar
     var profile = profiles.Find(ctx.Request.Query["game"].ToString());
-    if (profile is null) { ctx.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+    if (profile is null)
+    {
+        app.Logger.LogWarning("Conexão de {Ip} recusada (404): jogo \"{Game}\" não existe. Jogos prontos: {Ready}",
+            ctx.Connection.RemoteIpAddress, ctx.Request.Query["game"].ToString(), string.Join(", ", profiles.All.Select(p => p.Id)));
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
 
-    if (!await gate.WaitAsync(0)) { ctx.Response.StatusCode = StatusCodes.Status409Conflict; return; }
+    var clientInfo = $"{ctx.Connection.RemoteIpAddress} ({ctx.Request.Headers.UserAgent.ToString().Trim()})";
+
+    if (!await gate.WaitAsync(0))
+    {
+        app.Logger.LogWarning("Cliente {Client} recusado (409): já existe uma sessão em andamento. Se ela já terminou, " +
+                              "veja se o log mostra \"Sessão ... encerrada\"; se não mostra, o encerramento anterior ficou preso.", clientInfo);
+        ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+        return;
+    }
     try
     {
         using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-        await new StreamSession(profile, options, ffmpeg, app.Logger).RunAsync(ws, ctx.RequestAborted);
+        await new StreamSession(profile, options, ffmpeg, app.Logger, clientInfo, root).RunAsync(ws, ctx.RequestAborted);
     }
     finally
     {
@@ -97,5 +185,10 @@ Console.WriteLine($"Pasta dos jogos   : {gamesDir}");
 Console.WriteLine($"Jogos prontos     : {profiles.All.Count} ({string.Join(", ", profiles.All.Select(p => p.Id))})");
 Console.WriteLine($"Limites por jogo  : {options.GameCores} núcleo(s), {options.GameMemoryMb} MB");
 Console.WriteLine($"Teste no navegador: http://localhost:{options.Port}/test.html");
+if (diagOptions.Enabled)
+{
+    if (diagOptions.DebugPage) Console.WriteLine($"Diagnóstico ao vivo: http://localhost:{options.Port}/debug  (veja o que está sendo transmitido)");
+    Console.WriteLine($"Arquivos de log   : {(fileLog is not null ? fileLog.Path : diagDir)}");
+}
 
 app.Run();

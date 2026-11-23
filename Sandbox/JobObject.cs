@@ -45,6 +45,35 @@ internal sealed class JobObject : IDisposable
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
+    /// <summary>
+    /// CPU total gasta por TODOS os processos do job (o jogo e seus filhos) e quantos ainda estão vivos.
+    /// null se o job já foi fechado. Mais confiável que olhar só o processo iniciado: launchers abrem o jogo de verdade em outro processo.
+    /// </summary>
+    public (TimeSpan Cpu, int ActiveProcesses)? GetAccounting()
+    {
+        var handle = _handle;
+        if (handle == IntPtr.Zero) return null;
+
+        int size = Marshal.SizeOf<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>();
+        IntPtr ptr = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!QueryInformationJobObject(handle, JobObjectBasicAccountingInformation, ptr, (uint)size, out _))
+                return null;
+            var info = Marshal.PtrToStructure<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(ptr);
+            // As durações vêm em unidades de 100 ns.
+            return (TimeSpan.FromTicks(info.TotalUserTime + info.TotalKernelTime), (int)info.ActiveProcesses);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(ptr);
+        }
+    }
+
     public void Dispose()
     {
         if (_handle != IntPtr.Zero)
@@ -71,6 +100,7 @@ internal sealed class JobObject : IDisposable
     }
 
     // ---- P/Invoke ----
+    private const int JobObjectBasicAccountingInformation = 1;
     private const int JobObjectBasicUIRestrictions = 4;
     private const int JobObjectExtendedLimitInformation = 9;
 
@@ -98,6 +128,19 @@ internal sealed class JobObject : IDisposable
         public UIntPtr Affinity;
         public uint PriorityClass;
         public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -133,6 +176,9 @@ internal sealed class JobObject : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint size, out uint returned);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
