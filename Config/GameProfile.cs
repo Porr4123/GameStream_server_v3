@@ -45,6 +45,15 @@ public sealed class GameProfile
     public bool HideWindow { get; set; } = true;
 
     /// <summary>
+    /// Como esconder a janela (vale com hideWindow true):
+    /// "transparent" (padrão): a janela fica DENTRO do monitor, quase 100% transparente, sem receber clique e sempre abaixo
+    ///   de todas as outras janelas. O Windows só desenha o que está dentro da área de trabalho, então isso mantém o jogo
+    ///   renderizando.
+    /// "offscreen": fora de todos os monitores (alguns jogos param de desenhar assim).
+    /// </summary>
+    public string HideMode { get; set; } = "transparent";
+
+    /// <summary>
     /// "printwindow" (padrão): captura só a área do jogo, mesmo com a janela escondida.
     /// "screen": copia da tela (a janela precisa estar visível e sem nada por cima; use hideWindow false).
     /// "gdigrab" continua aceito como outro nome de "screen".
@@ -57,7 +66,10 @@ public sealed class GameProfile
     public int Fps { get; set; } = 30;
     public int BitrateKbps { get; set; } = 2000;
 
-    /// <summary>Únicas teclas que o cliente pode acionar.</summary>
+    /// <summary>
+    /// Teclas usadas pelo layout padrão deste jogo (informativo, enviado ao cliente). O servidor NÃO usa esta lista para
+    /// decidir o que injetar: aceita sempre e somente letras, números, setas, CTRL, SHIFT e ESC (veja KeyMap).
+    /// </summary>
     public List<string> AllowedKeys { get; set; } = new();
 
     /// <summary>Layout padrão dos botões; o cliente pode personalizar e salvar o seu.</summary>
@@ -69,7 +81,7 @@ public sealed class GameProfile
         AllowedKeys = new List<string>
         {
             "W", "A", "S", "D", "UP", "DOWN", "LEFT", "RIGHT",
-            "Z", "X", "C", "V", "B", "N", "ENTER", "ESC", "SPACE", "SHIFT", "END"
+            "Z", "X", "C", "V", "B", "N", "ESC", "SHIFT"
         },
         Layout = new List<ButtonLayout>
         {
@@ -80,7 +92,7 @@ public sealed class GameProfile
             new() { Type = "button", Key = "X", Label = "X", X = 0.90, Y = 0.44 },
             new() { Type = "button", Key = "C", Label = "C", X = 0.90, Y = 0.60 },
             new() { Type = "button", Key = "V", Label = "V", X = 0.90, Y = 0.76 },
-            new() { Type = "button", Key = "END", Label = "End", X = 0.45, Y = 0.04, Size = 0.09 }
+            new() { Type = "button", Key = "ESC", Label = "Esc", X = 0.45, Y = 0.04, Size = 0.09 }
         }
     };
 }

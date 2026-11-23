@@ -147,6 +147,24 @@ Se o vídeo flui (30 quadros/s, 0 descartes) mas o jogo parece "travado", o prob
 
 Se o log indicar `IMAGEM_PARADA` com o jogo ativo, teste no `game.json` primeiro `"hideWindow": false` e depois também `"captureMode": "screen"`.
 
+## Teclado (segurança)
+
+O servidor injeta **somente**: letras A-Z, números 0-9, setas (`UP DOWN LEFT RIGHT`), `CTRL`, `SHIFT` e `ESC`. A lista fica em `Input/KeyMap.cs` e **não depende** do `game.json`: o `allowedKeys` é só informativo (o cliente recebe a lista fixa em `safeKeys` no `GET /games`).
+
+- **Nunca** existem F1-F12, PrintScreen, Windows, ALT, TAB, ENTER, SPACE etc.: não há scancode cadastrado, então nem por engano saem.
+- `CTRL+ESC` (menu Iniciar) e `CTRL+SHIFT+ESC` (Gerenciador de Tarefas) são bloqueados: ESC é recusado com CTRL apertado e vice-versa.
+- Tecla **apertada** só é enviada se o jogo (ou outra janela do mesmo processo) estiver em primeiro plano naquele instante. Se o Windows não deixar trazer o jogo para frente, a tecla é **descartada** e o log mostra `DESCARTADA` / `SEM_FOCO`. Soltar tecla é sempre permitido, para nada ficar preso.
+- Não existe caminho para mouse.
+
+## Ocultar a janela do jogo (`hideMode`)
+
+Com `hideWindow: true` (padrão), a janela some do Alt+Tab e da barra de tarefas. `hideMode` escolhe como:
+
+- `"transparent"` (padrão): a janela fica **dentro do monitor** (o Windows só desenha o que está dentro da área de trabalho), com 1/255 de opacidade, sem receber cliques e **sempre abaixo de todas as outras janelas** (conferido a cada 250 ms; se o jogo pedir "sempre no topo", isso é desfeito). Ao dar foco para o jogo, a janela volta ao fundo sem perder o foco.
+- `"offscreen"`: fora de todos os monitores (modo antigo; alguns jogos param de desenhar).
+
+Limites: janela maior que o monitor ou coberta por janelas maximizadas pode não ser desenhada por jogos Chromium. Se a imagem ainda congelar, o log mostra `IMAGEM_PARADA`; tente `"hideMode": "offscreen"` ou `"hideWindow": false`.
+
 ## Autoteste
 
 Confere o caminho do vídeo inteiro **sem celular e sem jogo**: ffmpeg real com quadros sintéticos, divisão em quadros,

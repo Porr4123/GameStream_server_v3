@@ -336,7 +336,8 @@ public sealed class StreamSession
                     FocusFailures = inp?.FocusFailures ?? 0,
                     ForegroundWindow = inp?.Foreground ?? "",
                     PrintWindowMode = MethodOf(_profile) == CaptureMethod.PrintWindow,
-                    HideWindow = _profile.HideWindow
+                    HideWindow = _profile.HideWindow,
+                    HideMode = _profile.HideMode
                 };
 
                 var findings = Diagnosis.Evaluate(input);
@@ -397,11 +398,14 @@ public sealed class StreamSession
             WindowHider? hider = null;
             if (_profile.HideWindow && method == CaptureMethod.PrintWindow)
             {
-                hider = new WindowHider(game.WindowHandle);
+                var mode = string.Equals(_profile.HideMode, "offscreen", StringComparison.OrdinalIgnoreCase)
+                    ? HideMode.Offscreen
+                    : HideMode.Transparent;
+                hider = new WindowHider(game.WindowHandle, mode);
                 hider.Hide();
-                Native.GetWindowRect(game.WindowHandle, out var hidden);
-                _log.LogInformation("Janela do jogo escondida: agora em ({X},{Y}). Se a imagem congelar só quando escondida, use hideWindow=false.",
-                    hidden.Left, hidden.Top);
+                _log.LogInformation("Janela do jogo escondida (hideMode={Mode}): {Desc}. Se a imagem congelar só quando escondida, " +
+                                    "tente hideMode \"offscreen\" ou hideWindow=false.", mode, hider.Describe());
+                if (hider.TakeWarning() is { } hideWarn) _log.LogWarning("{Warn}", hideWarn);
             }
             else if (_profile.HideWindow)
             {
@@ -415,14 +419,17 @@ public sealed class StreamSession
             _gameState = (int)GameState.Running;
             _log.LogInformation("Mostrando o jogo no vídeo: {Framing}", framing);
 
-            _input = new InputInjector(_profile.AllowedKeys, game.WindowHandle);
-            _log.LogInformation("Entrada de teclas pronta ({N} teclas permitidas).", _profile.AllowedKeys.Count);
+            _input = new InputInjector(game.WindowHandle, hider is null ? null : hider.KeepAtBottom);
+            _log.LogInformation("Entrada de teclas pronta: só letras, números, setas, CTRL, SHIFT e ESC ({N} teclas), " +
+                                "e só com o jogo em primeiro plano.", KeyMap.Names.Count);
 
             // Vigia a janela: se o jogo fechar, volta para a tela de espera.
             while (!ct.IsCancellationRequested && Native.IsWindow(game.WindowHandle))
             {
                 if (hider?.EnsureHidden() == true) Interlocked.Increment(ref _rehides);
-                await Task.Delay(1000, ct);
+                if (hider?.TakeWarning() is { } w) _log.LogWarning("{Warn}", w);
+                // No modo transparente confere a pilha de janelas com mais frequência: "abaixo de todas" não pode demorar.
+                await Task.Delay(hider?.Mode == HideMode.Transparent ? 250 : 1000, ct);
             }
 
             if (!ct.IsCancellationRequested)
@@ -558,14 +565,20 @@ public sealed class StreamSession
                 var input = _input; // ainda null enquanto o jogo abre: teclas são ignoradas
                 ClientActivity.KeyResult result;
                 if (input is null) result = ClientActivity.KeyResult.GameNotReady;
-                else result = input.Handle(key, down) ? ClientActivity.KeyResult.Accepted : ClientActivity.KeyResult.Rejected;
+                else result = input.Handle(key, down) switch
+                {
+                    KeyOutcome.Rejected => ClientActivity.KeyResult.Rejected,
+                    KeyOutcome.NoFocus => ClientActivity.KeyResult.NoFocus,
+                    _ => ClientActivity.KeyResult.Accepted
+                };
 
                 if (_client.CountKey(result))
                     _log.LogInformation("Tecla {Key} {Dir} recebida do cliente: {Result}", key, down ? "apertada" : "solta",
                         result switch
                         {
                             ClientActivity.KeyResult.Accepted => "enviada ao jogo",
-                            ClientActivity.KeyResult.Rejected => "RECUSADA (não está em allowedKeys ou não existe)",
+                            ClientActivity.KeyResult.Rejected => "RECUSADA (fora da lista segura: letras, números, setas, CTRL, SHIFT, ESC; ou combinação bloqueada)",
+                            ClientActivity.KeyResult.NoFocus => "DESCARTADA: o jogo não está em primeiro plano (o servidor nunca injeta tecla fora do jogo)",
                             _ => "ignorada: o jogo ainda não abriu"
                         });
                 break;

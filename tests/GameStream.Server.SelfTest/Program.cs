@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using Microsoft.Extensions.Logging;
+using GameStream.Server.Input;
 using GameStream.Server.Net;
 using GameStream.Server.Sandbox;
 using GameStream.Server.Streaming;
@@ -30,6 +31,7 @@ TestAnnexB();
 TestLevels();
 await TestSlowConsumerAsync();
 await TestRealEncoderAsync();
+TestKeyPolicy();
 TestResourceLimits();
 TestFrameInspector();
 TestVideoProbe();
@@ -261,6 +263,57 @@ async Task TestRealEncoderAsync()
 }
 
 // ---------------------------------------------------------------------------------------------
+
+void TestKeyPolicy()
+{
+    Section("Teclado: só letras, números, setas, CTRL, SHIFT e ESC");
+
+    var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (char c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") expected.Add(c.ToString());
+    foreach (var n in new[] { "UP", "DOWN", "LEFT", "RIGHT", "CTRL", "SHIFT", "ESC" }) expected.Add(n);
+
+    Check(KeyMap.Names.Count == expected.Count && expected.All(n => KeyMap.TryGet(n, out _)),
+        $"a lista tem exatamente as {expected.Count} teclas permitidas (letras, números, setas, CTRL, SHIFT, ESC)");
+    Check(KeyMap.Names.All(expected.Contains), "e nenhuma tecla a mais");
+
+    var forbidden = new List<string>
+    {
+        "PRINTSCREEN", "PRTSC", "PRINT", "SNAPSHOT", "SYSRQ", "WIN", "WINDOWS", "LWIN", "RWIN", "META", "SUPER", "CMD", "APPS", "MENU",
+        "ALT", "LALT", "RALT", "ALTGR", "TAB", "ENTER", "RETURN", "SPACE", "BACKSPACE", "DELETE", "DEL", "INSERT", "HOME", "END",
+        "PGUP", "PGDN", "CAPSLOCK", "NUMLOCK", "SCROLLLOCK", "PAUSE", "BREAK", "SLEEP", "POWER", "", " ", "A ", "ESC ", "CTRL+ALT"
+    };
+    for (int i = 1; i <= 24; i++) forbidden.Add($"F{i}");
+    Check(forbidden.All(n => !KeyMap.TryGet(n, out _)), $"nenhum destes tem scancode ({forbidden.Count} nomes: F1-F24, PrintScreen, Windows, ALT, TAB, ENTER...)");
+
+    var codes = KeyMap.Names.Select(n => { KeyMap.TryGet(n, out var k); return k; }).ToList();
+    Check(codes.All(KeyMap.IsKnown), "IsKnown aceita os scancodes da lista");
+    Check(codes.Select(c => (c.Scan, c.Extended)).Distinct().Count() == codes.Count, "nenhuma tecla repete scancode");
+
+    // Scancodes que NUNCA podem sair: F1-F10 (3B-44), F11/F12 (57/58), PrintScreen (37 estendido / 54), Windows (5B/5C estendido), Menu (5D).
+    var neverScans = new List<ushort>();
+    for (ushort sc = 0x3B; sc <= 0x44; sc++) neverScans.Add(sc);
+    neverScans.AddRange(new ushort[] { 0x57, 0x58, 0x37, 0x54, 0x5B, 0x5C, 0x5D, 0x38, 0x0F, 0x1C, 0x39, 0x0E });
+    Check(neverScans.All(sc => !KeyMap.IsKnown(new KeyCode(sc, false)) && !KeyMap.IsKnown(new KeyCode(sc, true))),
+        "nenhum scancode de F1-F12, PrintScreen, Windows, Menu, ALT, TAB, ENTER, SPACE ou BACKSPACE está cadastrado");
+
+    // Setas são estendidas; as mesmas posições SEM "estendida" seriam o teclado numérico: não podem valer.
+    Check(KeyMap.TryGet("UP", out var up) && up.Extended && !KeyMap.IsKnown(new KeyCode(up.Scan, false)),
+        "seta é tecla estendida (o numpad com o mesmo scancode não é aceito)");
+
+    // Combinações que o Windows trata por fora do jogo.
+    Check(KeyPolicy.IsBlockedCombo("ESC", new[] { "CTRL" }), "ESC com CTRL apertado é bloqueado (CTRL+ESC = menu Iniciar)");
+    Check(KeyPolicy.IsBlockedCombo("ESC", new[] { "CTRL", "SHIFT" }), "ESC com CTRL+SHIFT é bloqueado (Gerenciador de Tarefas)");
+    Check(KeyPolicy.IsBlockedCombo("CTRL", new[] { "ESC" }), "CTRL com ESC já apertado também é bloqueado");
+    Check(KeyPolicy.IsBlockedCombo("esc", new[] { "ctrl" }), "sem diferença entre maiúsculas e minúsculas");
+    Check(!KeyPolicy.IsBlockedCombo("ESC", new[] { "SHIFT", "W" }), "ESC sozinho (ou com SHIFT/letras) funciona");
+    Check(!KeyPolicy.IsBlockedCombo("CTRL", new[] { "SHIFT", "A" }) && !KeyPolicy.IsBlockedCombo("A", new[] { "CTRL" }), "CTRL com letras funciona");
+
+    var def = GameProfile.CreateDefault("x");
+    Check(def.AllowedKeys.All(k => KeyMap.TryGet(k, out _)), "o perfil padrão só usa teclas da lista");
+    Check(def.Layout.SelectMany(b => (b.Keys ?? new List<string>()).Concat(b.Key is null ? Array.Empty<string>() : new[] { b.Key }))
+              .All(k => KeyMap.TryGet(k, out _)), "e o layout padrão também (nenhum botão morto)");
+    Check(def.HideMode == "transparent", "ocultar padrão: transparente");
+}
 
 void TestResourceLimits()
 {

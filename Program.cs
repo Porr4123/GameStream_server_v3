@@ -134,7 +134,8 @@ app.MapGet("/games", (HttpContext ctx) =>
     profiles.Load();
     return Results.Ok(profiles.All.Select(p => new
     {
-        p.Id, p.Name, p.StreamWidth, p.StreamHeight, p.Fps, p.AllowedKeys, p.Layout
+        p.Id, p.Name, p.StreamWidth, p.StreamHeight, p.Fps, p.AllowedKeys, p.Layout,
+        SafeKeys = GameStream.Server.Input.KeyMap.Names
     }));
 });
 
