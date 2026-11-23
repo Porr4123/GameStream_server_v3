@@ -77,7 +77,8 @@ public sealed class StreamSession
         var limits = ResourceLimits.Compute(
             _profile.Cores ?? _options.GameCores,
             _profile.MemoryMb ?? _options.GameMemoryMb,
-            _options.CoreStart);
+            _options.CoreStart,
+            _options.MemoryReserveMb);
 
         // ---- diagnóstico desta sessão ----
         var diag = _options.Diagnostics;
@@ -94,9 +95,9 @@ public sealed class StreamSession
             string.IsNullOrEmpty(_clientInfo) ? "?" : _clientInfo);
         _log.LogInformation(
             "Transmissão {W}x{H} a {Fps} fps, {Kbps} kbps; captureMode={Mode}, hideWindow={Hide}; {Keys} teclas permitidas; " +
-            "limites do jogo: {Cores} núcleo(s) (máscara 0x{GameMask:X}), {Mem} MB; ffmpeg nos núcleos 0x{ServerMask:X}",
+            "limites do jogo: {Cores} núcleo(s) (máscara 0x{GameMask:X}), {Mem} MB{Dyn}; ffmpeg nos núcleos 0x{ServerMask:X}",
             width, height, fps, _profile.BitrateKbps, _profile.CaptureMode, _profile.HideWindow, _profile.AllowedKeys.Count,
-            limits.Cores, limits.GameMask, limits.MemoryMb, limits.ServerMask);
+            limits.Cores, limits.GameMask, limits.MemoryMb, limits.MemoryIsDynamic ? " (dinâmico: RAM livre agora - reserva)" : " (fixo)", limits.ServerMask);
 
         // O 1º keyframe enviado mostra o que o celular de fato recebeu: perfil, nível e tamanho que o decodificador vai ver.
         bool spsLogged = false;

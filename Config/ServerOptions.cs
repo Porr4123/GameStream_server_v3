@@ -23,13 +23,20 @@ public sealed class ServerOptions
     /// </summary>
     public string LogoPath { get; set; } = "";
 
-    /// <summary>Núcleos (lógicos) reservados para cada jogo. O i5-3470 tem 4.</summary>
-    public int GameCores { get; set; } = 2;
+    /// <summary>Núcleos (lógicos) reservados para cada jogo. Padrão 1; o resto fica para servidor e ffmpeg.</summary>
+    public int GameCores { get; set; } = 1;
 
-    /// <summary>Limite de memória (MB) para todos os processos de um jogo.</summary>
-    public int GameMemoryMb { get; set; } = 4096;
+    /// <summary>
+    /// Limite de memória (MB) para todos os processos de um jogo.
+    /// 0 = DINÂMICO (padrão): a cada jogo que abre, usa a RAM livre naquele momento menos <see cref="MemoryReserveMb"/>.
+    /// Um número maior que 0 = limite fixo.
+    /// </summary>
+    public int GameMemoryMb { get; set; } = 0;
 
-    /// <summary>Primeiro núcleo do jogo. 0 = núcleos 0 e 1; o resto fica para servidor e ffmpeg.</summary>
+    /// <summary>No modo dinâmico, RAM (MB) deixada livre para Windows, servidor e ffmpeg.</summary>
+    public int MemoryReserveMb { get; set; } = 768;
+
+    /// <summary>Primeiro núcleo do jogo. 0 = o jogo começa no núcleo 0; o resto fica para servidor e ffmpeg.</summary>
     public int CoreStart { get; set; } = 0;
 
     /// <summary>Diagnóstico: log em arquivo, página /debug, quadros e vídeo salvos para análise.</summary>

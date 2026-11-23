@@ -87,8 +87,8 @@ var profiles = new ProfileStore(gamesDir);
 profiles.Load();
 
 // Aviso se o limite de RAM por jogo não cabe na máquina.
-long totalMb = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024);
-if (options.GameMemoryMb > totalMb * 0.75)
+long totalMb = GameStream.Server.Sandbox.SystemMemory.TotalMb();
+if (options.GameMemoryMb > 0 && options.GameMemoryMb > totalMb * 0.75)
     Console.WriteLine($"[aviso] Limite de {options.GameMemoryMb} MB por jogo, mas a máquina tem ~{totalMb} MB de RAM. " +
                       "Windows, servidor e ffmpeg também usam memória: reduza GameMemoryMb ou o jogo vai travar/paginar.");
 
@@ -183,7 +183,8 @@ Console.WriteLine("=== GameStream.Server ===");
 Console.WriteLine($"PIN de pareamento : {options.Pin}");
 Console.WriteLine($"Pasta dos jogos   : {gamesDir}");
 Console.WriteLine($"Jogos prontos     : {profiles.All.Count} ({string.Join(", ", profiles.All.Select(p => p.Id))})");
-Console.WriteLine($"Limites por jogo  : {options.GameCores} núcleo(s), {options.GameMemoryMb} MB");
+Console.WriteLine($"Limites por jogo  : {options.GameCores} núcleo(s), " +
+                  (options.GameMemoryMb > 0 ? $"{options.GameMemoryMb} MB fixos" : $"RAM dinâmica (livre na hora de abrir - {options.MemoryReserveMb} MB de reserva)"));
 Console.WriteLine($"Teste no navegador: http://localhost:{options.Port}/test.html");
 if (diagOptions.Enabled)
 {

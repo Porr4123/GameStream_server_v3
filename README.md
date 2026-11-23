@@ -60,8 +60,9 @@ Jogos novos aparecem sem reiniciar o servidor (as pastas são relidas a cada `/g
 
 ## Limites por jogo
 
-Padrão em `appsettings.json`: `GameCores: 2`, `GameMemoryMb: 4096`, `CoreStart: 0`.
-No i5-3470 (4 núcleos, sem hyper-threading): o jogo fica nos núcleos 0 e 1 e o ffmpeg nos núcleos 2 e 3.
+Padrão em `appsettings.json`: `GameCores: 1`, `GameMemoryMb: 0` (dinâmico), `MemoryReserveMb: 768`, `CoreStart: 0`.
+- **CPU:** o jogo fica só no núcleo 0; servidor e ffmpeg usam os demais. Para dar mais núcleos, aumente `GameCores`.
+- **RAM dinâmica:** com `GameMemoryMb: 0`, cada vez que um jogo abre o teto é a RAM livre naquele momento menos `MemoryReserveMb` (mínimo 1024 MB). Um número maior que 0 volta a ser limite fixo. O `game.json` de cada jogo pode ter `Cores`/`MemoryMb` próprios.
 Cada jogo pode ter valores próprios em `game.json` (`cores`, `memoryMb`).
 
 - A memória é o total confirmado (commit) de todos os processos do jogo; passou disso, o jogo recebe erro de alocação.
