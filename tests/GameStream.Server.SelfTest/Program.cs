@@ -4,6 +4,7 @@ using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using Microsoft.Extensions.Logging;
 using GameStream.Server.Net;
+using GameStream.Server.Sandbox;
 using GameStream.Server.Streaming;
 
 // Autoteste do caminho do vídeo (ffmpeg -> divisor de quadros -> fila de envio -> WebSocket), sem celular e sem jogo.
@@ -29,6 +30,7 @@ TestAnnexB();
 TestLevels();
 await TestSlowConsumerAsync();
 await TestRealEncoderAsync();
+TestResourceLimits();
 TestFrameInspector();
 TestVideoProbe();
 TestDiagnosis();
@@ -259,6 +261,23 @@ async Task TestRealEncoderAsync()
 }
 
 // ---------------------------------------------------------------------------------------------
+
+void TestResourceLimits()
+{
+    Section("Limites do jogo (1 núcleo, RAM dinâmica)");
+    var fixedLimit = ResourceLimits.Compute(1, 2048, 0, 768, () => 9999);
+    Check(fixedLimit.MemoryMb == 2048 && !fixedLimit.MemoryIsDynamic, "memoryMb > 0 continua sendo limite fixo");
+
+    var dyn = ResourceLimits.Compute(1, 0, 0, 768, () => 6000);
+    Check(dyn.MemoryIsDynamic && dyn.MemoryMb == 6000 - 768, $"dinâmico = RAM livre - reserva ({dyn.MemoryMb} MB)");
+    Check(ResourceLimits.Compute(1, 0, 0, 768, () => 8000).MemoryMb > dyn.MemoryMb, "com mais RAM livre o teto sobe");
+    Check(ResourceLimits.Compute(1, 0, 0, 768, () => 500).MemoryMb == ResourceLimits.MinAutoMb, "pouca RAM livre: nunca abaixo do mínimo");
+
+    Check(dyn.GameMask == 1UL && dyn.Cores == 1, "1 núcleo: o jogo fica só no núcleo 0 (máscara 0x1)");
+    if (Environment.ProcessorCount > 1)
+        Check((dyn.ServerMask & 1UL) == 0 && dyn.ServerMask != 0, "o ffmpeg/servidor ficam nos outros núcleos");
+    Check(new ServerOptions().GameCores == 1 && new ServerOptions().GameMemoryMb == 0, "padrões novos: 1 núcleo, RAM dinâmica");
+}
 
 void TestFrameInspector()
 {
