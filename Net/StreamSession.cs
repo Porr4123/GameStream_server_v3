@@ -17,9 +17,10 @@ namespace GameStream.Server.Net;
 /// Uma sessão = um cliente jogando um jogo.
 ///
 /// Servidor -> cliente:
-///   texto  {"t":"hello","game","w","h","fps"}   (enviado assim que conecta)
+///   texto  {"t":"hello","game","w","h","fps","audio":{"codec","rate","ch"}?}   (enviado assim que conecta; "audio" só com som ligado)
 ///   texto  {"t":"pong", ...}                    (resposta a {"t":"ping", ...}; devolve os mesmos campos)
 ///   binário [1][flags][quadro H.264 Annex B]    (SEMPRE: tela de espera enquanto o jogo abre, jogo depois)
+///   binário [2][0][quadro AAC cru]              (som do jogo, só se o hello trouxe "audio")
 /// Cliente -> servidor:
 ///   texto  {"t":"key","k":"Z","d":1}            (d: 1 = apertou, 0 = soltou)
 ///   texto  {"t":"ping", ...}  ou  ping

@@ -225,13 +225,14 @@ Libere a porta 5055 no firewall do Windows quando for testar pela rede.
 
 | Direção | Formato |
 |---|---|
-| servidor -> cliente | texto `{"t":"hello","game","w","h","fps"}` assim que conecta |
+| servidor -> cliente | texto `{"t":"hello","game","w","h","fps"}` assim que conecta; com o som ligado traz também `"audio":{"codec":"aac","rate":48000,"ch":2}` |
 | servidor -> cliente | binário: `[1][flags][quadro H.264 Annex B]` (flags bit0 = keyframe), **sempre** |
+| servidor -> cliente | binário: `[2][0][quadro AAC cru]` (som do jogo; só existe se o `hello` trouxe `audio`; veja "Som") |
 | servidor -> cliente | texto `{"t":"pong",...}` em resposta a `{"t":"ping",...}` |
 | cliente -> servidor | texto `{"t":"key","k":"Z","d":1}` (d: 1 apertou, 0 soltou) |
 | cliente -> servidor | texto `{"t":"ping",...}` (ou `ping` puro) |
 
-O cliente deve descartar os 2 primeiros bytes da mensagem binária e entregar o resto ao decodificador.
+O cliente deve separar as mensagens binárias pelo **primeiro byte** (1 = vídeo, 2 = som), descartar os 2 primeiros bytes e entregar o resto ao decodificador certo (H.264 ou AAC). Entregar um quadro de som ao decodificador de vídeo, ou o contrário, quebra a imagem.
 
 Garantias do fluxo de vídeo (conferidas pelo autoteste):
 
