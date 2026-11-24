@@ -264,3 +264,14 @@ Erros do jogo aparecem na própria imagem (tela de espera), não em mensagens de
 - **Rede**: HTTP/WebSocket puro e PIN em query string. Só para rede local. Falta TLS, limite de tentativas e token por dispositivo.
 - **Latência**: transporte é TCP. Quando o Wi-Fi oscila o servidor já descarta quadros (veja acima), mas o TCP ainda pode reter dados no buffer do sistema. Depois: UDP, bitrate adaptativo, pedido de keyframe pelo cliente.
 - **Um jogador por vez** (MVP).
+
+## Som
+
+O som do jogo vai para o celular junto com o vídeo, pelo mesmo WebSocket.
+
+- **Só o jogo**: o servidor usa a captura de áudio *por processo* do Windows (WASAPI process loopback) no processo do jogo e nos filhos dele. Notificações, música e outros programas do PC **nunca** são enviados. Precisa do **Windows 10 versão 2004 (build 19041) ou mais novo**; em versões mais antigas o som fica desligado (não há captura do sistema inteiro).
+- **Formato**: AAC-LC, 48 kHz, estéreo (ffmpeg, `128 kbps` por padrão). Cada quadro cru segue como mensagem binária `[2][0][quadro AAC]`.
+- **hello**: o JSON inicial traz `"audio":{"codec":"aac","rate":48000,"ch":2}` quando o som está ligado.
+- **game.json**: `"audio": true|false` e `"audioBitrateKbps": 32..320`.
+- Se a captura falhar, o jogo segue sem som e o log diz o motivo (`Som DESLIGADO nesta sessão`). No fim da sessão o log mostra `Som: N quadros AAC capturados`. Se N for 0, o som não ligou.
+- Se o jogo ainda não tocou nada, o servidor envia silêncio para manter o fluxo contínuo.

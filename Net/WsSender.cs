@@ -30,6 +30,15 @@ internal sealed class WsSender
     private readonly Channel<byte[]> _video;
     private readonly int _maxQueued;
 
+    // Áudio: fila própria e curta (~0,5 s). Se a rede não acompanha, descarta o mais antigo: som atrasado é pior que um estalo.
+    private readonly Channel<byte[]> _audio = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(24)
+    {
+        FullMode = BoundedChannelFullMode.DropOldest,
+        SingleReader = true,
+        SingleWriter = false
+    });
+    private long _audioSent, _audioBytes;
+
     private bool _waitKey = true; // só a thread do codificador mexe aqui
     private long _sent, _bytes, _dropped, _overflows, _maxSendMs, _keys;
     private long _totSent, _totBytes, _totDropped, _totOverflows, _totKeys;
@@ -97,6 +106,28 @@ internal sealed class WsSender
             }
         }
     }
+
+    /// <summary>Quadro AAC cru (sem cabeçalho ADTS). Mensagem binária: [2][0][quadro AAC]. Nunca bloqueia.</summary>
+    public void EnqueueAudio(byte[] aacFrame)
+    {
+        var message = new byte[aacFrame.Length + 2];
+        message[0] = 2;
+        Buffer.BlockCopy(aacFrame, 0, message, 2, aacFrame.Length);
+        _audio.Writer.TryWrite(message);
+    }
+
+    /// <summary>Envia a fila de áudio até a sessão acabar.</summary>
+    public async Task RunAudioAsync(CancellationToken ct)
+    {
+        await foreach (var message in _audio.Reader.ReadAllAsync(ct))
+        {
+            await SendAsync(message, WebSocketMessageType.Binary, ct);
+            Interlocked.Increment(ref _audioSent);
+            Interlocked.Add(ref _audioBytes, message.Length);
+        }
+    }
+
+    public (long Frames, long Bytes) AudioTotals => (Interlocked.Read(ref _audioSent), Interlocked.Read(ref _audioBytes));
 
     /// <summary>Envia a fila de vídeo até a sessão acabar.</summary>
     public async Task RunVideoAsync(CancellationToken ct)

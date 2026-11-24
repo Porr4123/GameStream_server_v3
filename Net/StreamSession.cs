@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Diagnostics;
+using GameStream.Server.Audio;
 using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using GameStream.Server.Input;
@@ -37,6 +38,10 @@ public sealed class StreamSession
 
     private volatile InputInjector? _input;
     private LaunchedGame? _game;
+    private AudioStreamer? _audioStreamer;
+    private WsSender? _audioSender;
+    private long _audioFramesFinal;
+    private bool _audioEnabled;
 
     // Estado que o monitor (diagnóstico) lê de outras tarefas.
     private volatile GameProbe? _gameProbe;
@@ -122,7 +127,12 @@ public sealed class StreamSession
         FrameComposer? composer = null;
         FfmpegEncoder? encoder = null;
         Task encoderTask = Task.CompletedTask, videoTask = Task.CompletedTask, receiveTask = Task.CompletedTask,
-            gameTask = Task.CompletedTask, statsTask = Task.CompletedTask;
+            gameTask = Task.CompletedTask, statsTask = Task.CompletedTask, audioTask = Task.CompletedTask;
+
+        _audioEnabled = _profile.Audio && ProcessLoopbackCapture.IsSupported;
+        if (_profile.Audio && !_audioEnabled)
+            _log.LogWarning("Som desligado: precisa do Windows 10 versão 2004 (build 19041) ou mais novo.");
+        _audioSender = sender;
 
         try
         {
@@ -130,10 +140,15 @@ public sealed class StreamSession
             composer.ShowStatus("Iniciando o jogo...");
 
             // O cliente recebe algo imediatamente: "hello" agora e vídeo logo em seguida, mesmo sem jogo.
-            await sender.SendJsonAsync(new { t = "hello", game = _profile.Id, w = width, h = height, fps }, ct);
+            await sender.SendJsonAsync(new
+            {
+                t = "hello", game = _profile.Id, w = width, h = height, fps,
+                audio = _audioEnabled ? new { codec = "aac", rate = ProcessLoopbackCapture.SampleRate, ch = ProcessLoopbackCapture.Channels } : null
+            }, ct);
             _log.LogInformation("hello enviado ao cliente ({W}x{H} @ {Fps} fps)", width, height, fps);
 
             videoTask = sender.RunVideoAsync(ct);
+            if (_audioEnabled) audioTask = sender.RunAudioAsync(ct);
 
             encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe, width, height, bitrateKbps, _display.Fit);
             encoderTask = encoder.RunAsync(sender.EnqueueVideo, ct);
@@ -176,10 +191,15 @@ public sealed class StreamSession
             // compositor; ela só solta quando o jogo morre. Esperar o codificador antes de matar o jogo travava
             // a sessão para sempre e o servidor ficava "ocupado" para os próximos clientes.
             Interlocked.Exchange(ref _game, null)?.Dispose();
+            if (_audioStreamer is { } audio)
+            {
+                _audioFramesFinal = audio.Frames;
+                audio.Dispose();
+            }
             encoder?.Dispose();
 
             bool clean = await WaitAllAsync(TimeSpan.FromSeconds(5),
-                encoderTask, videoTask, receiveTask, gameTask, statsTask);
+                encoderTask, videoTask, receiveTask, gameTask, statsTask, audioTask);
 
             if (composer is not null)
             {
@@ -223,6 +243,12 @@ public sealed class StreamSession
             "{Client}",
             _sessionId, _sessionWatch.Elapsed, _endReason, t.FramesSent, t.BytesSent / 1024, t.KeyframesSent, t.FramesDropped,
             t.Overflows, vp.TotalChanges, vp.TotalFrames, _client);
+        if (_audioEnabled)
+        {
+            var a = sender.AudioTotals;
+            _log.LogInformation("Som: {Frames} quadros AAC capturados, {Sent} enviados ({Kb} KB){Hint}", _audioFramesFinal, a.Frames, a.Bytes / 1024,
+                _audioFramesFinal == 0 ? " - nenhum áudio foi capturado (o som não ligou nesta sessão)" : "");
+        }
     }
 
     private void LogSps(byte[] firstKeyframe, int width, int height)
@@ -400,6 +426,12 @@ public sealed class StreamSession
 
             var game = await GameLauncher.LaunchAsync(_profile, limits, ct);
             _game = game;
+
+            if (_audioEnabled && _audioSender is { } audioSender)
+            {
+                var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct);
+                if (streamer.TryStart(game.Process.Id)) _audioStreamer = streamer;
+            }
             _log.LogInformation("A janela do jogo apareceu após {Ms} ms: {Desc}", launchWatch.ElapsedMilliseconds,
                 GameProbe.Describe(game));
 
@@ -454,6 +486,7 @@ public sealed class StreamSession
                 _input = null;
                 _gameProbe = null;
                 Interlocked.Exchange(ref _game, null)?.Dispose();
+                _audioStreamer?.Dispose();
                 composer.ShowStatus("Jogo encerrado.");
             }
         }

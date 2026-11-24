@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
+using GameStream.Server.Audio;
 using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -45,6 +46,7 @@ await TestFileLoggerAndRecorderAsync();
 await TestSpsAndFfmpegCheckAsync();
 await TestFrozenGameScenarioAsync();
 TestDebugHub();
+await TestAudioAsync();
 
 Console.WriteLine();
 if (failures.Count == 0)
@@ -929,6 +931,43 @@ static string? FindTool(string name)
         catch { /* entrada inválida no PATH */ }
     }
     return null;
+}
+
+async Task TestAudioAsync()
+{
+    Section("Som: ADTS -> quadros AAC crus -> mensagem [2][0][quadro]");
+    var ffmpeg = FindTool("ffmpeg");
+    if (ffmpeg is null) { Console.WriteLine("  (ffmpeg não encontrado: teste do áudio pulado)"); return; }
+
+    var (code, _) = await RunAsync(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000",
+        "-ac", "2", "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k", "-f", "adts", Path.Combine(Path.GetTempPath(), "gs-audio-test.aac"));
+    Check(code == 0, "ffmpeg gera AAC-LC em ADTS");
+    var adts = File.ReadAllBytes(Path.Combine(Path.GetTempPath(), "gs-audio-test.aac"));
+
+    var parser = new AdtsParser();
+    var frames = new List<byte[]>();
+    // entrega em pedaços de tamanho estranho: o divisor tem que juntar quadros partidos
+    for (int pos = 0; pos < adts.Length;)
+    {
+        int n = Math.Min(37 + pos % 211, adts.Length - pos);
+        parser.Feed(adts[pos..(pos + n)], n, frames.Add);
+        pos += n;
+    }
+    Check(frames.Count >= 90 && frames.Count <= 100, $"2 s de áudio = ~94 quadros AAC (veio {frames.Count})");
+    Check(frames.All(f => f.Length > 0 && f.Length < 2048), "todos os quadros têm tamanho plausível");
+    Check(parser.Resyncs == 0, "sem bytes descartados (nenhum ressincronismo)");
+    Check(!(frames[5].Length >= 2 && frames[5][0] == 0xFF && (frames[5][1] & 0xF0) == 0xF0), "o cabeçalho ADTS foi retirado");
+
+    // AudioSpecificConfig usado pelo celular: AAC-LC (2), 48 kHz (índice 3), 2 canais = 0x11 0x90
+    Check(((2 << 11) | (3 << 7) | (2 << 3)) == 0x1190, "AudioSpecificConfig 0x11 0x90 = AAC-LC 48 kHz estéreo");
+
+    var ws = new FakeWebSocket();
+    var sender = new WsSender(ws);
+    sender.EnqueueAudio(new byte[] { 9, 8, 7 });
+    using var cts = new CancellationTokenSource(500);
+    try { await sender.RunAudioAsync(cts.Token); } catch (OperationCanceledException) { }
+    var msgs = ws.Sent.Where(m => m.Type == WebSocketMessageType.Binary).ToList();
+    Check(msgs.Count == 1 && msgs[0].Data.SequenceEqual(new byte[] { 2, 0, 9, 8, 7 }), "mensagem de áudio = [2][0][quadro AAC]");
 }
 
 static async Task<(int Code, string Output)> RunAsync(string file, params string[] args)

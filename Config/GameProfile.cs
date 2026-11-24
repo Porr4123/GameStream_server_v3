@@ -54,6 +54,14 @@ public sealed class GameProfile
     public string HideMode { get; set; } = "transparent";
 
     /// <summary>
+    /// Som do jogo no celular. Captura SÓ o áudio do processo do jogo (nunca o resto do PC); precisa do Windows 10 build 19041+.
+    /// </summary>
+    public bool Audio { get; set; } = true;
+
+    /// <summary>Taxa do áudio AAC em kbps (32 a 320). 128 é um bom equilíbrio.</summary>
+    public int AudioBitrateKbps { get; set; } = 128;
+
+    /// <summary>
     /// "printwindow" (padrão): captura só a área do jogo, mesmo com a janela escondida.
     /// "screen": copia da tela (a janela precisa estar visível e sem nada por cima; use hideWindow false).
     /// "gdigrab" continua aceito como outro nome de "screen".
