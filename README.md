@@ -147,6 +147,50 @@ Se o vídeo flui (30 quadros/s, 0 descartes) mas o jogo parece "travado", o prob
 
 Se o log indicar `IMAGEM_PARADA` com o jogo ativo, teste no `game.json` primeiro `"hideWindow": false` e depois também `"captureMode": "screen"`.
 
+## Teclado (segurança)
+
+O servidor injeta **somente**: letras A-Z, números 0-9, setas (`UP DOWN LEFT RIGHT`), `CTRL`, `SHIFT` e `ESC`. A lista fica em `Input/KeyMap.cs` e **não depende** do `game.json`: o `allowedKeys` é só informativo (o cliente recebe a lista fixa em `safeKeys` no `GET /games`).
+
+- **Nunca** existem F1-F12, PrintScreen, Windows, ALT, TAB, ENTER, SPACE etc.: não há scancode cadastrado, então nem por engano saem.
+- `CTRL+ESC` (menu Iniciar) e `CTRL+SHIFT+ESC` (Gerenciador de Tarefas) são bloqueados: ESC é recusado com CTRL apertado e vice-versa.
+- Tecla **apertada** só é enviada se o jogo (ou outra janela do mesmo processo) estiver em primeiro plano naquele instante. Se o Windows não deixar trazer o jogo para frente, a tecla é **descartada** e o log mostra `DESCARTADA` / `SEM_FOCO`. Soltar tecla é sempre permitido, para nada ficar preso.
+- Não existe caminho para mouse.
+
+## Ocultar a janela do jogo (`hideMode`)
+
+Com `hideWindow: true` (padrão), a janela some do Alt+Tab e da barra de tarefas. `hideMode` escolhe como:
+
+- `"transparent"` (padrão): a janela fica **dentro do monitor** (o Windows só desenha o que está dentro da área de trabalho), com 1/255 de opacidade, sem receber cliques e **sempre abaixo de todas as outras janelas** (conferido a cada 250 ms; se o jogo pedir "sempre no topo", isso é desfeito). Ao dar foco para o jogo, a janela volta ao fundo sem perder o foco.
+- `"offscreen"`: fora de todos os monitores (modo antigo; alguns jogos param de desenhar).
+
+Limites: janela maior que o monitor ou coberta por janelas maximizadas pode não ser desenhada por jogos Chromium. Se a imagem ainda congelar, o log mostra `IMAGEM_PARADA`; tente `"hideMode": "offscreen"` ou `"hideWindow": false`.
+
+## Qualidade de imagem e FPS
+
+Padrões novos (para jogos criados a partir de agora): transmissão **1280x720 a 60 fps**, qualidade constante **CRF 21** com teto de **8000 kbps**, x264 **veryfast**, perfil **Main**.
+
+- **Sem serrilhado nem borrado:** o jogo é capturado no **tamanho nativo** (sem reamostrar no Windows). O ffmpeg ajusta para o tamanho da transmissão com `scaleMode` (bicubic por padrão) e coloca faixas pretas se a proporção for diferente. Só se o jogo for maior que a transmissão ele é reduzido antes, com média de pixels.
+- **Imagem parada fica nítida e barata:** com CRF, o vídeo gasta pouco em tela estática e usa até o teto quando há movimento.
+- **Cores corretas:** conversão e marcação BT.709.
+- Se o tamanho da janela do jogo muda (tela de espera -> jogo), o ffmpeg reinicia por uns 0,3 s, mas a saída continua com o mesmo tamanho e perfil, então o celular não reconfigura o decodificador.
+
+Opções no `game.json` do jogo:
+
+| campo | padrão | o que faz |
+|---|---|---|
+| `streamWidth` / `streamHeight` | 1280 / 720 | tamanho da transmissão (fixo) |
+| `fps` | 60 | quadros por segundo (1 a 60) |
+| `crf` | 21 | qualidade: 18 = muito nítido, 26 = leve; `0` = taxa fixa |
+| `bitrateKbps` | 8000 | teto de taxa (alvo se `crf` for 0) |
+| `preset` | veryfast | `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (mais lento = mais qualidade e mais CPU) |
+| `h264Profile` | main | `baseline` (mais compatível), `main`, `high` |
+| `scaleMode` | bicubic | `lanczos` (mais nítido), `bilinear`, `neighbor` (pixel art: bordas duras) |
+| `encoderThreads` | 0 | 0 = um por núcleo livre do ffmpeg (até 4) |
+
+**game.json já existente não muda sozinho.** Os valores antigos (640x480, 30 fps, 2000 kbps) continuam valendo. Edite o arquivo, ou apague-o para o servidor gerar um novo com os padrões (perde seus ajustes de `exe`, `hideWindow` etc.).
+
+Se o PC não acompanhar, o log mostra `FPS_BAIXO` dizendo se o gargalo é a captura ou a codificação. Para aliviar: `"preset": "ultrafast"`, `"fps": 30` ou `"streamWidth": 960, "streamHeight": 540`. Se algum celular não decodificar, use `"h264Profile": "baseline"`.
+
 ## Autoteste
 
 Confere o caminho do vídeo inteiro **sem celular e sem jogo**: ffmpeg real com quadros sintéticos, divisão em quadros,

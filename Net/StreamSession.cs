@@ -66,8 +66,8 @@ public sealed class StreamSession
         var ct = cts.Token;
 
         // Tamanho fixo da transmissão (par, exigência do H.264 yuv420p). 0 no game.json = 640x480.
-        int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 640) & ~1;
-        int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 480) & ~1;
+        int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 1280) & ~1;
+        int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 720) & ~1;
         int fps = Math.Clamp(_profile.Fps, 1, 60);
 
         // Fila de envio curta (~0,5 s): se o celular/Wi-Fi não acompanharem, descarta até o próximo keyframe
@@ -88,7 +88,7 @@ public sealed class StreamSession
             ? new SessionRecorder(diag.ResolveDir(_contentRoot), _sessionId, diag, _log)
             : null;
         using var debugPage = diag.Enabled && diag.DebugPage
-            ? DebugHub.Begin(BuildStatusText, () => probe.LatestFrame() is { } f ? (f, width, height) : null)
+            ? DebugHub.Begin(BuildStatusText, () => probe.Latest() is { } f ? (f.Bgra, f.W, f.H) : null)
             : null;
 
         _log.LogInformation("===== Sessão {Id}: jogo {Game}, cliente {Client} =====", _sessionId, _profile.Id,
@@ -127,7 +127,7 @@ public sealed class StreamSession
 
             videoTask = sender.RunVideoAsync(ct);
 
-            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe);
+            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe, width, height);
             encoderTask = encoder.RunAsync(sender.EnqueueVideo, ct);
 
             // Recebe desde já: sem isso, o ping do cliente ficava sem resposta enquanto o jogo abria.
@@ -264,7 +264,7 @@ public sealed class StreamSession
                 if (_gameShownWatch is { } w && frameTimes.Count > 0 && w.Elapsed.TotalSeconds >= frameTimes.Peek())
                 {
                     int sec = frameTimes.Dequeue();
-                    var path = recorder?.SaveFrame($"jogo+{sec}s", probe.LatestFrame(), width, height);
+                    var path = recorder?.SaveFrame($"jogo+{sec}s", probe.LatestFrame(), probe.Width, probe.Height);
                     if (path is not null) _log.LogInformation("Quadro salvo ({Sec} s depois do jogo abrir): {Path}", sec, path);
                 }
 
@@ -336,7 +336,10 @@ public sealed class StreamSession
                     FocusFailures = inp?.FocusFailures ?? 0,
                     ForegroundWindow = inp?.Foreground ?? "",
                     PrintWindowMode = MethodOf(_profile) == CaptureMethod.PrintWindow,
-                    HideWindow = _profile.HideWindow
+                    HideWindow = _profile.HideWindow,
+                    HideMode = _profile.HideMode,
+                    TargetFps = Math.Clamp(_profile.Fps, 1, 60),
+                    FpsSent = fpsSent
                 };
 
                 var findings = Diagnosis.Evaluate(input);
@@ -355,7 +358,7 @@ public sealed class StreamSession
 
                     if (f.Code is "IMAGEM_PARADA" or "JANELA_TRAVADA" or "CAPTURA_FALHA")
                     {
-                        var path = recorder?.SaveFrame("problema-" + f.Code.ToLowerInvariant(), probe.LatestFrame(), width, height);
+                        var path = recorder?.SaveFrame("problema-" + f.Code.ToLowerInvariant(), probe.LatestFrame(), probe.Width, probe.Height);
                         if (path is not null)
                             _log.LogInformation("Quadro do momento do problema salvo em {Path}: abra para ver o que está sendo transmitido.", path);
                     }
@@ -397,11 +400,14 @@ public sealed class StreamSession
             WindowHider? hider = null;
             if (_profile.HideWindow && method == CaptureMethod.PrintWindow)
             {
-                hider = new WindowHider(game.WindowHandle);
+                var mode = string.Equals(_profile.HideMode, "offscreen", StringComparison.OrdinalIgnoreCase)
+                    ? HideMode.Offscreen
+                    : HideMode.Transparent;
+                hider = new WindowHider(game.WindowHandle, mode);
                 hider.Hide();
-                Native.GetWindowRect(game.WindowHandle, out var hidden);
-                _log.LogInformation("Janela do jogo escondida: agora em ({X},{Y}). Se a imagem congelar só quando escondida, use hideWindow=false.",
-                    hidden.Left, hidden.Top);
+                _log.LogInformation("Janela do jogo escondida (hideMode={Mode}): {Desc}. Se a imagem congelar só quando escondida, " +
+                                    "tente hideMode \"offscreen\" ou hideWindow=false.", mode, hider.Describe());
+                if (hider.TakeWarning() is { } hideWarn) _log.LogWarning("{Warn}", hideWarn);
             }
             else if (_profile.HideWindow)
             {
@@ -415,14 +421,17 @@ public sealed class StreamSession
             _gameState = (int)GameState.Running;
             _log.LogInformation("Mostrando o jogo no vídeo: {Framing}", framing);
 
-            _input = new InputInjector(_profile.AllowedKeys, game.WindowHandle);
-            _log.LogInformation("Entrada de teclas pronta ({N} teclas permitidas).", _profile.AllowedKeys.Count);
+            _input = new InputInjector(game.WindowHandle, hider is null ? null : hider.KeepAtBottom);
+            _log.LogInformation("Entrada de teclas pronta: só letras, números, setas, CTRL, SHIFT e ESC ({N} teclas), " +
+                                "e só com o jogo em primeiro plano.", KeyMap.Names.Count);
 
             // Vigia a janela: se o jogo fechar, volta para a tela de espera.
             while (!ct.IsCancellationRequested && Native.IsWindow(game.WindowHandle))
             {
                 if (hider?.EnsureHidden() == true) Interlocked.Increment(ref _rehides);
-                await Task.Delay(1000, ct);
+                if (hider?.TakeWarning() is { } w) _log.LogWarning("{Warn}", w);
+                // No modo transparente confere a pilha de janelas com mais frequência: "abaixo de todas" não pode demorar.
+                await Task.Delay(hider?.Mode == HideMode.Transparent ? 250 : 1000, ct);
             }
 
             if (!ct.IsCancellationRequested)
@@ -558,14 +567,20 @@ public sealed class StreamSession
                 var input = _input; // ainda null enquanto o jogo abre: teclas são ignoradas
                 ClientActivity.KeyResult result;
                 if (input is null) result = ClientActivity.KeyResult.GameNotReady;
-                else result = input.Handle(key, down) ? ClientActivity.KeyResult.Accepted : ClientActivity.KeyResult.Rejected;
+                else result = input.Handle(key, down) switch
+                {
+                    KeyOutcome.Rejected => ClientActivity.KeyResult.Rejected,
+                    KeyOutcome.NoFocus => ClientActivity.KeyResult.NoFocus,
+                    _ => ClientActivity.KeyResult.Accepted
+                };
 
                 if (_client.CountKey(result))
                     _log.LogInformation("Tecla {Key} {Dir} recebida do cliente: {Result}", key, down ? "apertada" : "solta",
                         result switch
                         {
                             ClientActivity.KeyResult.Accepted => "enviada ao jogo",
-                            ClientActivity.KeyResult.Rejected => "RECUSADA (não está em allowedKeys ou não existe)",
+                            ClientActivity.KeyResult.Rejected => "RECUSADA (fora da lista segura: letras, números, setas, CTRL, SHIFT, ESC; ou combinação bloqueada)",
+                            ClientActivity.KeyResult.NoFocus => "DESCARTADA: o jogo não está em primeiro plano (o servidor nunca injeta tecla fora do jogo)",
                             _ => "ignorada: o jogo ainda não abriu"
                         });
                 break;

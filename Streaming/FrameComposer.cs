@@ -4,70 +4,95 @@ using GameStream.Server.Interop;
 namespace GameStream.Server.Streaming;
 
 /// <summary>
-/// Produz, num tamanho FIXO, o quadro que vai para o codificador:
-///  - tela de espera: fundo preto + logo + texto de status (enquanto o jogo abre, se der erro ou se fechar);
-///  - jogo: a captura da janela, redimensionada e centralizada (sem distorcer a proporção).
-/// Como o tamanho nunca muda, o cliente recebe vídeo desde o primeiro instante, com ou sem jogo.
+/// Produz o quadro que vai para o codificador:
+///  - tela de espera: fundo preto + logo + texto de status, no tamanho da transmissão (enquanto o jogo abre, se der erro ou se fechar);
+///  - jogo: a captura da janela NO TAMANHO NATIVO dele (sem reamostrar aqui). Só se o jogo for maior que a transmissão
+///    ele é reduzido (com média de pixels) para caber, para não mandar quadros enormes ao ffmpeg.
+/// O ffmpeg ajusta o tamanho final (bicubic) e põe faixas pretas; o tamanho DA TRANSMISSÃO nunca muda, então o
+/// cliente recebe vídeo desde o primeiro instante, com ou sem jogo.
 /// </summary>
 internal sealed class FrameComposer : IFrameSource, IDisposable
 {
     private readonly object _lock = new();
-    private readonly int _w;
-    private readonly int _h;
+    private readonly int _streamW;
+    private readonly int _streamH;
     private readonly string? _logoPath;
 
-    private readonly IntPtr _dc;
-    private readonly IntPtr _bitmap;
-    private readonly IntPtr _oldBitmap;
-    private readonly IntPtr _bits;
-    private readonly byte[] _frame;
+    // Superfície atual (muda de tamanho quando o jogo aparece ou some).
+    private int _w;
+    private int _h;
+    private IntPtr _dc;
+    private IntPtr _bitmap;
+    private IntPtr _oldBitmap;
+    private IntPtr _bits;
+    private byte[] _frame = Array.Empty<byte>();
 
     private WindowCapture? _capture;
-    private int _dx, _dy, _dw, _dh;
     private bool _disposed;
 
-    public int Width => _w;
-    public int Height => _h;
+    /// <summary>Tamanho do quadro atual (da tela de espera ou do jogo).</summary>
+    public int Width { get { lock (_lock) return _w; } }
+    public int Height { get { lock (_lock) return _h; } }
 
+    /// <param name="width">Tamanho da transmissão (também o da tela de espera).</param>
     public FrameComposer(int width, int height, string? logoPath)
     {
-        _w = width;
-        _h = height;
+        _streamW = width;
+        _streamH = height;
         _logoPath = logoPath;
+        CreateSurface(width, height);
+    }
 
+    /// <summary>(Re)cria a superfície de desenho no tamanho pedido, já preta.</summary>
+    private void CreateSurface(int w, int h)
+    {
         var bmi = new Native.BITMAPINFO
         {
             bmiHeader = new Native.BITMAPINFOHEADER
             {
                 biSize = (uint)Marshal.SizeOf<Native.BITMAPINFOHEADER>(),
-                biWidth = _w,
-                biHeight = -_h,
+                biWidth = w,
+                biHeight = -h,
                 biPlanes = 1,
                 biBitCount = 32,
                 biCompression = 0
             }
         };
 
+        IntPtr dc, bitmap, bits;
         IntPtr screenDc = Native.GetDC(IntPtr.Zero);
         try
         {
-            _dc = Native.CreateCompatibleDC(screenDc);
-            _bitmap = Native.CreateDIBSection(screenDc, ref bmi, 0, out _bits, IntPtr.Zero, 0);
+            dc = Native.CreateCompatibleDC(screenDc);
+            bitmap = Native.CreateDIBSection(screenDc, ref bmi, 0, out bits, IntPtr.Zero, 0);
         }
         finally
         {
             Native.ReleaseDC(IntPtr.Zero, screenDc);
         }
 
-        if (_dc == IntPtr.Zero || _bitmap == IntPtr.Zero || _bits == IntPtr.Zero)
+        if (dc == IntPtr.Zero || bitmap == IntPtr.Zero || bits == IntPtr.Zero)
         {
-            if (_bitmap != IntPtr.Zero) Native.DeleteObject(_bitmap);
-            if (_dc != IntPtr.Zero) Native.DeleteDC(_dc);
+            if (bitmap != IntPtr.Zero) Native.DeleteObject(bitmap);
+            if (dc != IntPtr.Zero) Native.DeleteDC(dc);
             throw new InvalidOperationException("Falha ao criar o quadro de vídeo (GDI).");
         }
 
-        _oldBitmap = Native.SelectObject(_dc, _bitmap);
-        _frame = new byte[_w * _h * 4];
+        // Só troca depois de a nova existir: se falhar acima, a superfície antiga continua valendo.
+        if (_dc != IntPtr.Zero)
+        {
+            Native.SelectObject(_dc, _oldBitmap);
+            Native.DeleteObject(_bitmap);
+            Native.DeleteDC(_dc);
+        }
+
+        _dc = dc;
+        _bitmap = bitmap;
+        _bits = bits;
+        _oldBitmap = Native.SelectObject(dc, bitmap);
+        _w = w;
+        _h = h;
+        _frame = new byte[w * h * 4];
         Native.PatBlt(_dc, 0, 0, _w, _h, Native.BLACKNESS);
     }
 
@@ -79,6 +104,7 @@ internal sealed class FrameComposer : IFrameSource, IDisposable
             if (_disposed) return;
             _capture?.Dispose();
             _capture = null;
+            if (_w != _streamW || _h != _streamH) CreateSurface(_streamW, _streamH);
             DrawPlaceholder(text);
         }
     }
@@ -104,29 +130,45 @@ internal sealed class FrameComposer : IFrameSource, IDisposable
 
             var capture = new WindowCapture(hwnd, method);
 
-            // Cabe dentro do quadro mantendo a proporção; sobra faixa preta nas laterais ou em cima/embaixo.
-            double scale = Math.Min((double)_w / capture.Width, (double)_h / capture.Height);
-            _dw = Math.Max(2, (int)(capture.Width * scale));
-            _dh = Math.Max(2, (int)(capture.Height * scale));
-            _dx = (_w - _dw) / 2;
-            _dy = (_h - _dh) / 2;
+            // Tamanho nativo do jogo; só reduz (mantendo a proporção) se for maior que a transmissão.
+            // Aumentar fica por conta do ffmpeg (bicubic), que faz melhor e sem custo na captura.
+            double scale = Math.Min(1.0, Math.Min((double)_streamW / capture.Width, (double)_streamH / capture.Height));
+            int w = Math.Max(16, (int)(capture.Width * scale)) & ~1;
+            int h = Math.Max(16, (int)(capture.Height * scale)) & ~1;
+
+            try
+            {
+                CreateSurface(w, h);
+            }
+            catch
+            {
+                capture.Dispose();
+                throw;
+            }
 
             _capture?.Dispose();
             _capture = capture;
-            Native.PatBlt(_dc, 0, 0, _w, _h, Native.BLACKNESS);
 
-            return $"captura {capture.Width}x{capture.Height} ({method}) -> {_dw}x{_dh} em ({_dx},{_dy}) dentro de {_w}x{_h}";
+            string how = scale < 1.0
+                ? $"reduzido pelo Windows (média de pixels) para {w}x{h}, o ffmpeg termina o ajuste"
+                : $"no tamanho nativo ({w}x{h}); o ffmpeg ajusta para {_streamW}x{_streamH}";
+            return $"captura {capture.Width}x{capture.Height} ({method}), {how}";
         }
     }
 
     /// <summary>Devolve o quadro atual (BGRA). O buffer é reaproveitado: use antes de pedir o próximo.</summary>
-    public byte[] NextFrame()
+    public byte[] NextFrame() => NextFrame(out _, out _);
+
+    /// <summary>Quadro atual junto com o tamanho dele (lidos sob o mesmo lock).</summary>
+    public byte[] NextFrame(out int width, out int height)
     {
         lock (_lock)
         {
+            width = _w;
+            height = _h;
             if (_disposed) return _frame;
 
-            _capture?.DrawTo(_dc, _dx, _dy, _dw, _dh);
+            _capture?.DrawTo(_dc, 0, 0, _w, _h);
             Native.GdiFlush();
             Marshal.Copy(_bits, _frame, 0, _frame.Length);
             return _frame;

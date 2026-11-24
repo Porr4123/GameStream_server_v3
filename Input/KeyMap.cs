@@ -3,11 +3,23 @@ namespace GameStream.Server.Input;
 /// <summary>Scancode (conjunto 1) e se a tecla é "estendida".</summary>
 public readonly record struct KeyCode(ushort Scan, bool Extended);
 
+/// <summary>
+/// ÚNICA lista de teclas que o servidor sabe injetar: letras A-Z, números 0-9, setas, CTRL, SHIFT e ESC.
+/// Nada mais existe aqui de propósito: F1-F12, PrintScreen, Windows, ALT, TAB, ENTER etc. não têm scancode
+/// cadastrado, então não há como enviá-los nem por engano. Para liberar outra tecla é preciso mudar este
+/// arquivo (e o autoteste, que confere a lista inteira).
+/// </summary>
 public static class KeyMap
 {
     private static readonly Dictionary<string, KeyCode> Map = Build();
 
     public static bool TryGet(string name, out KeyCode key) => Map.TryGetValue(name, out key);
+
+    /// <summary>Nomes aceitos, em maiúsculas.</summary>
+    public static IReadOnlyCollection<string> Names => Map.Keys;
+
+    /// <summary>true se este scancode pertence a alguma tecla da lista (conferência final antes do SendInput).</summary>
+    public static bool IsKnown(KeyCode code) => Map.ContainsValue(code);
 
     private static Dictionary<string, KeyCode> Build()
     {
@@ -24,29 +36,35 @@ public static class KeyMap
         Row("ASDFGHJKL", 0x1E);
         Row("ZXCVBNM", 0x2C);
 
-        for (int i = 0; i < 10; i++) m[$"F{i + 1}"] = new KeyCode((ushort)(0x3B + i), false);
-        m["F11"] = new KeyCode(0x57, false);
-        m["F12"] = new KeyCode(0x58, false);
-
         m["ESC"] = new KeyCode(0x01, false);
-        m["BACKSPACE"] = new KeyCode(0x0E, false);
-        m["TAB"] = new KeyCode(0x0F, false);
-        m["ENTER"] = new KeyCode(0x1C, false);
         m["CTRL"] = new KeyCode(0x1D, false);
         m["SHIFT"] = new KeyCode(0x2A, false);
-        m["ALT"] = new KeyCode(0x38, false);
-        m["SPACE"] = new KeyCode(0x39, false);
 
-        // Teclas estendidas.
-        m["HOME"] = new KeyCode(0x47, true);
+        // Setas (teclas estendidas).
         m["UP"] = new KeyCode(0x48, true);
-        m["PGUP"] = new KeyCode(0x49, true);
         m["LEFT"] = new KeyCode(0x4B, true);
         m["RIGHT"] = new KeyCode(0x4D, true);
-        m["END"] = new KeyCode(0x4F, true);
         m["DOWN"] = new KeyCode(0x50, true);
-        m["PGDN"] = new KeyCode(0x51, true);
 
         return m;
+    }
+}
+
+/// <summary>Combinações que o Windows trata fora do jogo, mesmo só com teclas da lista.</summary>
+public static class KeyPolicy
+{
+    /// <summary>
+    /// CTRL+ESC abre o menu Iniciar (é a tecla Windows por outro caminho) e CTRL+SHIFT+ESC abre o Gerenciador de
+    /// Tarefas. Por isso ESC é recusado enquanto CTRL está apertado, e CTRL enquanto ESC está apertado.
+    /// </summary>
+    /// <param name="key">Tecla que está sendo apertada agora.</param>
+    /// <param name="held">Teclas já apertadas (maiúsculas).</param>
+    public static bool IsBlockedCombo(string key, IEnumerable<string> held)
+    {
+        bool Holding(string name) => held.Contains(name, StringComparer.OrdinalIgnoreCase);
+
+        if (key.Equals("ESC", StringComparison.OrdinalIgnoreCase)) return Holding("CTRL");
+        if (key.Equals("CTRL", StringComparison.OrdinalIgnoreCase)) return Holding("ESC");
+        return false;
     }
 }

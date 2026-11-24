@@ -41,6 +41,11 @@ internal sealed record DiagInput
     // configuração
     public bool PrintWindowMode { get; init; } = true;
     public bool HideWindow { get; init; } = true;
+    public string HideMode { get; init; } = "";
+
+    /// <summary>Quadros por segundo pedidos (game.json) e os realmente enviados na última janela de medição.</summary>
+    public int TargetFps { get; init; }
+    public double FpsSent { get; init; }
 }
 
 /// <summary>
@@ -98,15 +103,28 @@ internal static class Diagnosis
                 $"Cada captura leva em média {i.AvgCaptureMs:0} ms (o orçamento é ~33 ms a 30 fps): o vídeo não chega a 30 quadros/s. " +
                 "O jogo está pesado ou a janela está tão grande que redimensionar custa caro."));
 
+        if (i.TargetFps > 0 && i.FpsSent > 0 && i.FpsSent < i.TargetFps * 0.8 && i.DroppedInWindow == 0)
+        {
+            double budget = 1000.0 / i.TargetFps;
+            string why = i.GameShown && i.AvgCaptureMs > budget * 0.7
+                ? $"O gargalo é a CAPTURA: cada quadro leva em média {i.AvgCaptureMs:0} ms e o orçamento a {i.TargetFps} fps é {budget:0} ms. " +
+                  "O PrintWindow/jogo não acompanha: baixe \"fps\" no game.json (ex.: 30), reduza a janela do jogo ou teste \"captureMode\": \"screen\"."
+                : "A captura é rápida, então o gargalo é a CODIFICAÇÃO/CPU: o x264 não consegue fechar " +
+                  $"{i.TargetFps} quadros/s. No game.json use \"preset\": \"ultrafast\", ou baixe \"fps\" (30), \"streamWidth\"/\"streamHeight\" " +
+                  "(ex.: 960x540) ou dê mais núcleos ao servidor (GameCores no appsettings.json).";
+            f.Add(new("FPS_BAIXO", FindingLevel.Warning,
+                $"O vídeo está saindo a {i.FpsSent:0} quadros/s, abaixo dos {i.TargetFps} pedidos. {why}"));
+        }
+
         if (i.FocusFailures > 0)
             f.Add(new("SEM_FOCO", FindingLevel.Error,
-                $"O Windows RECUSOU dar foco à janela do jogo {i.FocusFailures} vez(es). As teclas do celular estão indo para " +
-                $"{(i.ForegroundWindow.Length > 0 ? i.ForegroundWindow : "outra janela")} e NÃO para o jogo. " +
+                $"O Windows RECUSOU dar foco à janela do jogo {i.FocusFailures} vez(es). Por segurança o servidor DESCARTA a tecla em vez de " +
+                $"mandá-la a outra janela; quem está em primeiro plano é {(i.ForegroundWindow.Length > 0 ? i.ForegroundWindow : "outra janela")}. " +
                 "Deixe o PC desbloqueado, sem outro programa pedindo atenção, e rode o servidor como o mesmo usuário que está logado."));
 
         if (i.KeysAccepted == 0 && i.KeysRejected > 0)
             f.Add(new("TECLAS_RECUSADAS", FindingLevel.Warning,
-                $"O celular mandou {i.KeysRejected} tecla(s) e todas foram recusadas: não estão em allowedKeys no game.json (ou o nome não existe)."));
+                $"O celular mandou {i.KeysRejected} tecla(s) e todas foram recusadas: fora da lista segura (só letras, números, setas, CTRL, SHIFT e ESC; CTRL+ESC é bloqueado) ou com nome inexistente."));
 
         bool still = i.StillSeconds >= StillThresholdSeconds && !i.WindowHung;
         if (still)
@@ -135,7 +153,8 @@ internal static class Diagnosis
                 hints.Add("A janela do jogo NÃO está em primeiro plano.");
 
             if (i.PrintWindowMode && i.HideWindow)
-                hints.Add("Teste 1: no game.json use \"hideWindow\": false (a janela fica visível no PC). Teste 2, se continuar: também \"captureMode\": \"screen\".");
+                hints.Add((i.HideMode.Length > 0 ? $"Modo de ocultar atual: hideMode \"{i.HideMode}\" (existem \"transparent\" e \"offscreen\"). " : "") +
+                          "Teste 1: no game.json use \"hideWindow\": false (a janela fica visível no PC). Teste 2, se continuar: também \"captureMode\": \"screen\".");
             else if (i.PrintWindowMode)
                 hints.Add("Teste: \"captureMode\": \"screen\" (e deixe a janela do jogo visível, sem nada por cima).");
             else

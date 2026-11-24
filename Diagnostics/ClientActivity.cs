@@ -19,11 +19,12 @@ internal sealed class ClientActivity
     public long KeysAccepted { get; private set; }
     public long KeysRejected { get; private set; }
     public long KeysBeforeGame { get; private set; }
+    public long KeysNoFocus { get; private set; }
     public long OtherMessages { get; private set; }
     public long BadMessages { get; private set; }
     public long TextPings { get; private set; }
 
-    public enum KeyResult { Accepted, Rejected, GameNotReady }
+    public enum KeyResult { Accepted, Rejected, GameNotReady, NoFocus }
 
     /// <returns>true nas primeiras teclas: vale a pena escrever cada uma no log.</returns>
     public bool CountKey(KeyResult result)
@@ -34,6 +35,7 @@ internal sealed class ClientActivity
             {
                 case KeyResult.Accepted: KeysAccepted++; break;
                 case KeyResult.Rejected: KeysRejected++; break;
+                case KeyResult.NoFocus: KeysNoFocus++; break;
                 default: KeysBeforeGame++; break;
             }
             _lastKey = _lastAny = _now();
@@ -69,7 +71,7 @@ internal sealed class ClientActivity
         {
             string last = _lastKey is null ? "nenhuma tecla ainda" : $"última há {(_now() - _lastKey.Value).TotalSeconds:0} s";
             string other = _otherTypes.Count == 0 ? "" : ", outras: " + string.Join(" ", _otherTypes.Select(kv => $"{kv.Key}×{kv.Value}"));
-            return $"teclas {KeysAccepted} aceitas / {KeysRejected} recusadas / {KeysBeforeGame} antes do jogo abrir ({last}){other}";
+            return $"teclas {KeysAccepted} aceitas / {KeysRejected} recusadas / {KeysNoFocus} descartadas sem foco / {KeysBeforeGame} antes do jogo abrir ({last}){other}";
         }
     }
 }

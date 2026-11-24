@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using Microsoft.Extensions.Logging;
+using GameStream.Server.Input;
 using GameStream.Server.Net;
 using GameStream.Server.Sandbox;
 using GameStream.Server.Streaming;
@@ -30,6 +31,9 @@ TestAnnexB();
 TestLevels();
 await TestSlowConsumerAsync();
 await TestRealEncoderAsync();
+TestEncoderSettings();
+await TestQualityEncoderAsync();
+TestKeyPolicy();
 TestResourceLimits();
 TestFrameInspector();
 TestVideoProbe();
@@ -186,7 +190,8 @@ async Task TestRealEncoderAsync()
     var ws = new FakeWebSocket();
     var sender = new WsSender(ws, 30);
     var source = new SyntheticSource(w, h);
-    var encoder = new FfmpegEncoder(ffmpeg, source, new GameProfile { BitrateKbps = 2000 }, fps, 0);
+    var encoder = new FfmpegEncoder(ffmpeg, source,
+        new GameProfile { BitrateKbps = 2000, Crf = 0, Preset = "ultrafast", H264Profile = "baseline", EncoderThreads = 1 }, fps, 0);
 
     using var cts = new CancellationTokenSource();
     var videoTask = sender.RunVideoAsync(cts.Token);
@@ -260,7 +265,205 @@ async Task TestRealEncoderAsync()
     Check(firstOutMs < 2000, $"o primeiro quadro sai {firstOutMs} ms depois de ligar o codificador");
 }
 
+void TestEncoderSettings()
+{
+    Section("Qualidade: parâmetros do x264 e ajuste de tamanho");
+
+    var bad = new GameProfile
+    {
+        Preset = "veryfast -x264-params evil=1", H264Profile = "../../x", ScaleMode = "bicubic,drawtext=file=/etc/passwd", Crf = 999,
+        BitrateKbps = 1
+    };
+    var s = EncoderSettings.From(bad, 1280, 720, 60, 99);
+    Check(s.Preset == "veryfast" && s.Profile == "main" && s.ScaleFlags == "bicubic", "texto estranho no game.json cai no padrão (não vira argumento do ffmpeg)");
+    Check(s.Crf == 40 && s.BitrateKbps == 200 && s.Threads == 8, "crf, taxa e threads ficam dentro de limites");
+    Check(EncoderSettings.From(new GameProfile { Crf = 0 }, 1280, 720, 60, 2).Crf == 0, "crf 0 desliga o modo de qualidade constante");
+    Check(EncoderSettings.From(new GameProfile { Preset = " ULTRAFAST ", ScaleMode = "Lanczos" }, 1280, 720, 30, 1) is { Preset: "ultrafast", ScaleFlags: "lanczos" },
+        "maiúsculas e espaços são aceitos");
+
+    var d = new GameProfile();
+    Check(d.StreamWidth == 1280 && d.StreamHeight == 720 && d.Fps == 60 && d.Crf == 21 && d.Preset == "veryfast" && d.H264Profile == "main",
+        "padrões novos: 1280x720, 60 fps, CRF 21, veryfast, perfil Main");
+
+    Check(EncoderSettings.Fit(640, 480, 1280, 720) == (960, 720), "640x480 em 1280x720 = 960x720 (faixas pretas dos lados)");
+    Check(EncoderSettings.Fit(1920, 1080, 1280, 720) == (1280, 720), "1920x1080 em 1280x720 = 1280x720");
+    Check(EncoderSettings.Fit(1280, 720, 1280, 720) == (1280, 720), "tamanho igual: sem ajuste");
+    var odd = EncoderSettings.Fit(817, 625, 1280, 720);
+    Check(odd.W % 2 == 0 && odd.H % 2 == 0 && odd.W <= 1280 && odd.H <= 720, $"tamanho ímpar vira par ({odd.W}x{odd.H})");
+
+    var args = FfmpegEncoder.BuildArgs(EncoderSettings.From(d, 1280, 720, 60, 3), 816, 624);
+    string line = string.Join(' ', args);
+    Check(line.Contains("-video_size 816x624"), "a entrada é do tamanho do jogo");
+    Check(line.Contains("scale=942:720") && line.Contains("pad=1280:720:(ow-iw)/2:(oh-ih)/2"), "816x624 vira 942x720 (proporção mantida) e ganha faixas até 1280x720");
+    Check(line.Contains("-crf 21") && line.Contains("-maxrate 8000k") && !line.Contains("-b:v"), "CRF 21 com teto de 8000 kbps");
+    Check(line.Contains("-profile:v main") && line.Contains("-level:v 3.2") && line.Contains("-preset veryfast"), "perfil Main, nível 3.2 (720p60), preset veryfast");
+    Check(line.Contains("out_color_matrix=bt709") && line.Contains("-colorspace bt709") && line.Contains("-color_range tv"), "cor BT.709 na conversão e marcada no fluxo");
+    Check(!line.Contains("slices=1"), "com várias threads o x264 pode dividir o quadro (mais rápido)");
+    Check(FfmpegEncoder.BuildArgs(EncoderSettings.From(d, 1280, 720, 60, 1), 1280, 720).Contains("aud=1:repeat-headers=1:slices=1"), "com 1 thread: 1 slice por quadro");
+    Check(string.Join(' ', FfmpegEncoder.BuildArgs(EncoderSettings.From(new GameProfile { Crf = 0, BitrateKbps = 3000 }, 1280, 720, 30, 1), 1280, 720)).Contains("-b:v 3000k"),
+        "crf 0 = taxa fixa");
+}
+
+async Task TestQualityEncoderAsync()
+{
+    Section("Qualidade: vídeo real com os padrões novos");
+    var ffmpeg = FindTool("ffmpeg");
+    if (ffmpeg is null) { Console.WriteLine("  ffmpeg não encontrado: parte ignorada."); return; }
+    var ffprobe = FindTool("ffprobe");
+
+    // ---- 1) O jogo muda de tamanho no meio da sessão (espera 1280x720 -> jogo 816x624 -> jogo 640x480): a saída não muda ----
+    const int fps = 60;
+    var ws = new FakeWebSocket();
+    var sender = new WsSender(ws, 120);
+    var source = new ResizingSource((1280, 720), (816, 624), (640, 480));
+    var profile = new GameProfile();
+    var encoder = new FfmpegEncoder(ffmpeg, source, profile, fps, 0, null, null, 1280, 720);
+
+    using var cts = new CancellationTokenSource();
+    var videoTask = sender.RunVideoAsync(cts.Token);
+    var encTask = encoder.RunAsync(sender.EnqueueVideo, cts.Token);
+
+    var perPhase = new List<int>();
+    for (int phase = 0; phase < 3; phase++)
+    {
+        int before = ws.Sent.Count;
+        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        perPhase.Add(ws.Sent.Count - before);
+        source.Next();
+    }
+    cts.Cancel();
+    encoder.Dispose();
+    foreach (var t in new[] { encTask, videoTask })
+        try { await t; } catch (OperationCanceledException) { }
+
+    var msgs = ws.Sent.Where(m => m.Type == WebSocketMessageType.Binary).Select(m => m.Data).ToList();
+    Console.WriteLine($"  quadros por fase (2,5 s cada, alvo {fps} fps): {string.Join(" / ", perPhase)}  -> {perPhase.Sum() / 7.5:0} quadros/s no total, neste computador");
+    Check(perPhase.All(n => n >= 2.5 * 30), "o vídeo continua fluindo (>= 30 quadros/s) em cada fase, inclusive depois de cada mudança de tamanho");
+    Check(msgs.Count > 0 && (msgs[0][1] & 1) == 1, "começa num keyframe");
+
+    var keys = Enumerable.Range(0, msgs.Count).Where(i => (msgs[i][1] & 1) == 1).ToList();
+    var spsList = keys.Select(i => FindNal(msgs[i], 2, 7)).ToList();
+    Check(spsList.All(x => x is { Length: >= 4 }), "todo keyframe traz SPS");
+    var infos = keys.Select(i => GameStream.Server.Diagnostics.H264Info.ParseSps(msgs[i])).ToList();
+    Check(infos.All(i => i is { Width: 1280, Height: 720 }), $"a saída é sempre 1280x720, mesmo com o jogo em 3 tamanhos ({infos.Count} keyframes conferidos)");
+    Check(infos.All(i => i is { ProfileIdc: 77, LevelIdc: 32 }), "sempre perfil Main nível 3.2: o decodificador do celular não precisa ser reconfigurado");
+    Check(infos.Select(i => i?.ToString()).Distinct().Count() == 1, "SPS idêntico antes e depois de cada reinício do ffmpeg");
+
+    var dir = Path.Combine(Path.GetTempPath(), "gamestream-selftest-q-" + Environment.ProcessId);
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var all = Path.Combine(dir, "all.h264");
+        await File.WriteAllBytesAsync(all, msgs.SelectMany(m => m.AsSpan(2).ToArray()).ToArray());
+        var (code, err) = await RunAsync(ffmpeg, "-v", "error", "-f", "h264", "-i", all, "-f", "null", "-");
+        Check(code == 0 && err.Trim().Length == 0, "o fluxo inteiro (com as 2 trocas de tamanho) decodifica sem erros" + (err.Trim().Length > 0 ? $": {err.Trim()}" : ""));
+
+        if (ffprobe is not null)
+        {
+            var (pc, pout) = await RunAsync(ffprobe, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,profile,color_space,color_range,color_primaries,color_transfer", "-of", "default=nw=1", all);
+            var text = pout.Replace("\r", "").Replace("\n", " ");
+            Check(pc == 0 && text.Contains("width=1280") && text.Contains("height=720") && text.Contains("profile=Main"), $"ffprobe: {text.Trim()}");
+            Check(text.Contains("color_space=bt709") && text.Contains("color_primaries=bt709") && text.Contains("color_transfer=bt709"),
+                "o fluxo declara BT.709 (o celular reproduz as cores certas)");
+        }
+
+        // ---- 2) Nitidez medida: o MESMO conteúdo (1280x720) com a configuração antiga e com a nova ----
+        const int frames = 90;
+        var rich = new RichSource(1280, 720);
+        var srcRaw = Path.Combine(dir, "src.raw");
+        await using (var fs = File.Create(srcRaw))
+            for (int i = 0; i < frames; i++) await fs.WriteAsync(rich.FrameAt(i));
+
+        async Task<double> SsimAsync(GameProfile p, string tag)
+        {
+            var wsq = new FakeWebSocket();
+            var snd = new WsSender(wsq, 400);
+            var src = new ReplaySource(rich, frames);
+            var enc = new FfmpegEncoder(ffmpeg, src, p, 60, 0, null, null, 1280, 720);
+            using var c = new CancellationTokenSource();
+            var vt = snd.RunVideoAsync(c.Token);
+            var et = enc.RunAsync(snd.EnqueueVideo, c.Token);
+            var sw2 = Stopwatch.StartNew();
+            while (src.Done == false && sw2.Elapsed < TimeSpan.FromSeconds(30)) await Task.Delay(20);
+            await Task.Delay(500);
+            c.Cancel(); enc.Dispose();
+            foreach (var t in new[] { et, vt }) try { await t; } catch (OperationCanceledException) { }
+
+            var bytes = wsq.Sent.Where(m => m.Type == WebSocketMessageType.Binary).SelectMany(m => m.Data.AsSpan(2).ToArray()).ToArray();
+            var file = Path.Combine(dir, tag + ".h264");
+            await File.WriteAllBytesAsync(file, bytes);
+            var (c2, e2) = await RunAsync(ffmpeg, "-v", "info", "-f", "rawvideo", "-pixel_format", "bgr0", "-video_size", "1280x720", "-framerate", "60", "-i", srcRaw,
+                "-f", "h264", "-i", file, "-lavfi", "[0:v]format=yuv420p[a];[1:v]format=yuv420p[b];[b][a]ssim", "-f", "null", "-");
+            var m = System.Text.RegularExpressions.Regex.Match(e2, @"All:([0-9.]+)");
+            double kbps = bytes.Length * 8.0 / 1000 / (frames / 60.0);
+            Console.WriteLine($"  {tag}: SSIM {(m.Success ? m.Groups[1].Value : "?")}, ~{kbps:0} kbps");
+            return m.Success ? double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : -1;
+        }
+
+        double oldQ = await SsimAsync(new GameProfile { BitrateKbps = 2000, Crf = 0, Preset = "ultrafast", H264Profile = "baseline", EncoderThreads = 1 }, "antiga (baseline, ultrafast, 2000 kbps)");
+        double newQ = await SsimAsync(new GameProfile(), "nova (main, veryfast, CRF 21, teto 8000 kbps)");
+        Check(oldQ > 0 && newQ > 0, "SSIM calculado nas duas configurações");
+        Check(newQ > oldQ, $"a configuração nova é mais fiel à imagem original ({newQ:0.0000} > {oldQ:0.0000})");
+    }
+    finally
+    {
+        try { Directory.Delete(dir, true); } catch { /* ignora */ }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
+
+void TestKeyPolicy()
+{
+    Section("Teclado: só letras, números, setas, CTRL, SHIFT e ESC");
+
+    var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (char c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") expected.Add(c.ToString());
+    foreach (var n in new[] { "UP", "DOWN", "LEFT", "RIGHT", "CTRL", "SHIFT", "ESC" }) expected.Add(n);
+
+    Check(KeyMap.Names.Count == expected.Count && expected.All(n => KeyMap.TryGet(n, out _)),
+        $"a lista tem exatamente as {expected.Count} teclas permitidas (letras, números, setas, CTRL, SHIFT, ESC)");
+    Check(KeyMap.Names.All(expected.Contains), "e nenhuma tecla a mais");
+
+    var forbidden = new List<string>
+    {
+        "PRINTSCREEN", "PRTSC", "PRINT", "SNAPSHOT", "SYSRQ", "WIN", "WINDOWS", "LWIN", "RWIN", "META", "SUPER", "CMD", "APPS", "MENU",
+        "ALT", "LALT", "RALT", "ALTGR", "TAB", "ENTER", "RETURN", "SPACE", "BACKSPACE", "DELETE", "DEL", "INSERT", "HOME", "END",
+        "PGUP", "PGDN", "CAPSLOCK", "NUMLOCK", "SCROLLLOCK", "PAUSE", "BREAK", "SLEEP", "POWER", "", " ", "A ", "ESC ", "CTRL+ALT"
+    };
+    for (int i = 1; i <= 24; i++) forbidden.Add($"F{i}");
+    Check(forbidden.All(n => !KeyMap.TryGet(n, out _)), $"nenhum destes tem scancode ({forbidden.Count} nomes: F1-F24, PrintScreen, Windows, ALT, TAB, ENTER...)");
+
+    var codes = KeyMap.Names.Select(n => { KeyMap.TryGet(n, out var k); return k; }).ToList();
+    Check(codes.All(KeyMap.IsKnown), "IsKnown aceita os scancodes da lista");
+    Check(codes.Select(c => (c.Scan, c.Extended)).Distinct().Count() == codes.Count, "nenhuma tecla repete scancode");
+
+    // Scancodes que NUNCA podem sair: F1-F10 (3B-44), F11/F12 (57/58), PrintScreen (37 estendido / 54), Windows (5B/5C estendido), Menu (5D).
+    var neverScans = new List<ushort>();
+    for (ushort sc = 0x3B; sc <= 0x44; sc++) neverScans.Add(sc);
+    neverScans.AddRange(new ushort[] { 0x57, 0x58, 0x37, 0x54, 0x5B, 0x5C, 0x5D, 0x38, 0x0F, 0x1C, 0x39, 0x0E });
+    Check(neverScans.All(sc => !KeyMap.IsKnown(new KeyCode(sc, false)) && !KeyMap.IsKnown(new KeyCode(sc, true))),
+        "nenhum scancode de F1-F12, PrintScreen, Windows, Menu, ALT, TAB, ENTER, SPACE ou BACKSPACE está cadastrado");
+
+    // Setas são estendidas; as mesmas posições SEM "estendida" seriam o teclado numérico: não podem valer.
+    Check(KeyMap.TryGet("UP", out var up) && up.Extended && !KeyMap.IsKnown(new KeyCode(up.Scan, false)),
+        "seta é tecla estendida (o numpad com o mesmo scancode não é aceito)");
+
+    // Combinações que o Windows trata por fora do jogo.
+    Check(KeyPolicy.IsBlockedCombo("ESC", new[] { "CTRL" }), "ESC com CTRL apertado é bloqueado (CTRL+ESC = menu Iniciar)");
+    Check(KeyPolicy.IsBlockedCombo("ESC", new[] { "CTRL", "SHIFT" }), "ESC com CTRL+SHIFT é bloqueado (Gerenciador de Tarefas)");
+    Check(KeyPolicy.IsBlockedCombo("CTRL", new[] { "ESC" }), "CTRL com ESC já apertado também é bloqueado");
+    Check(KeyPolicy.IsBlockedCombo("esc", new[] { "ctrl" }), "sem diferença entre maiúsculas e minúsculas");
+    Check(!KeyPolicy.IsBlockedCombo("ESC", new[] { "SHIFT", "W" }), "ESC sozinho (ou com SHIFT/letras) funciona");
+    Check(!KeyPolicy.IsBlockedCombo("CTRL", new[] { "SHIFT", "A" }) && !KeyPolicy.IsBlockedCombo("A", new[] { "CTRL" }), "CTRL com letras funciona");
+
+    var def = GameProfile.CreateDefault("x");
+    Check(def.AllowedKeys.All(k => KeyMap.TryGet(k, out _)), "o perfil padrão só usa teclas da lista");
+    Check(def.Layout.SelectMany(b => (b.Keys ?? new List<string>()).Concat(b.Key is null ? Array.Empty<string>() : new[] { b.Key }))
+              .All(k => KeyMap.TryGet(k, out _)), "e o layout padrão também (nenhum botão morto)");
+    Check(def.HideMode == "transparent", "ocultar padrão: transparente");
+}
 
 void TestResourceLimits()
 {
@@ -383,6 +586,9 @@ void TestDiagnosis()
     Check(!Codes(healthy with { StillSeconds = 3 }).Contains("IMAGEM_PARADA"), "3 s parado ainda não é alarme (tela estática é normal)");
     Check(Codes(healthy with { WindowHung = true, StillSeconds = 30 }) == "JANELA_TRAVADA", "janela sem resposta: só JANELA_TRAVADA (não duplica com imagem parada)");
     Check(Codes(healthy with { WindowMinimized = true }).Contains("JANELA_MINIMIZADA"), "janela minimizada");
+    Check(Get(healthy with { TargetFps = 60, FpsSent = 30, AvgCaptureMs = 3 }, "FPS_BAIXO").Message.Contains("CODIFICAÇÃO"), "30 de 60 fps com captura rápida: culpa a codificação/CPU");
+    Check(Get(healthy with { TargetFps = 60, FpsSent = 30, AvgCaptureMs = 30 }, "FPS_BAIXO").Message.Contains("CAPTURA"), "30 de 60 fps com captura lenta: culpa a captura");
+    Check(!Codes(healthy with { TargetFps = 60, FpsSent = 55 }).Contains("FPS_BAIXO"), "55 de 60 fps não é alarme");
     Check(Codes(healthy with { CaptureAttempts = 100, CaptureFailures = 100 }).Contains("CAPTURA_FALHA"), "captura falhando sempre");
     Check(Codes(healthy with { CaptureAttempts = 100, CaptureFailures = 3 }) == "CAPTURA_FALHA_PARCIAL", "captura falhando às vezes");
     Check(Codes(healthy with { AvgCaptureMs = 90 }) == "CAPTURA_LENTA", "captura lenta");
@@ -725,6 +931,82 @@ sealed class SyntheticSource : IFrameSource
             }
         return _frame;
     }
+}
+
+/// <summary>Muda de tamanho cada vez que <see cref="Next"/> é chamado (tela de espera -> jogo -> outro tamanho).</summary>
+sealed class ResizingSource : IFrameSource
+{
+    private readonly (int W, int H)[] _sizes;
+    private int _i;
+    private SyntheticSource _cur;
+    private readonly object _lock = new();
+
+    public ResizingSource(params (int W, int H)[] sizes)
+    {
+        _sizes = sizes;
+        _cur = new SyntheticSource(sizes[0].W, sizes[0].H);
+    }
+
+    public void Next()
+    {
+        lock (_lock)
+        {
+            if (_i + 1 >= _sizes.Length) return;
+            _i++;
+            _cur = new SyntheticSource(_sizes[_i].W, _sizes[_i].H);
+        }
+    }
+
+    public int Width { get { lock (_lock) return _cur.Width; } }
+    public int Height { get { lock (_lock) return _cur.Height; } }
+    public byte[] NextFrame() { lock (_lock) return _cur.NextFrame(); }
+
+    public byte[] NextFrame(out int width, out int height)
+    {
+        lock (_lock)
+        {
+            width = _cur.Width;
+            height = _cur.Height;
+            return _cur.NextFrame();
+        }
+    }
+}
+
+/// <summary>Conteúdo difícil de comprimir (degradê, linhas diagonais finas, quadriculado, bolas em movimento): mostra serrilhado e borrado.</summary>
+sealed class RichSource
+{
+    private readonly int _w, _h;
+    public RichSource(int w, int h) { _w = w; _h = h; }
+
+    public byte[] FrameAt(int n)
+    {
+        var f = new byte[_w * _h * 4];
+        int cx = 200 + (n * 9) % (_w - 400), cy = 200 + (n * 5) % (_h - 400);
+        for (int y = 0; y < _h; y++)
+            for (int x = 0; x < _w; x++)
+            {
+                int o = (y * _w + x) * 4;
+                int r = x * 255 / _w, g = y * 255 / _h, b = 90;
+                if (((x + y) % 23) < 2) { r = g = b = 255; }                     // linha diagonal fina
+                if (x > 40 && x < 360 && y > 40 && y < 200 && (((x / 4) + (y / 4)) & 1) == 0) { r = g = b = 235; } // quadriculado (texto/pixel art)
+                int dx = x - cx, dy = y - cy;
+                if (dx * dx + dy * dy < 90 * 90) { r = 230; g = 60; b = 40; }    // bola
+                f[o] = (byte)b; f[o + 1] = (byte)g; f[o + 2] = (byte)r; f[o + 3] = 255;
+            }
+        return f;
+    }
+}
+
+/// <summary>Entrega uma sequência fixa de quadros do <see cref="RichSource"/> e depois repete o último.</summary>
+sealed class ReplaySource : IFrameSource
+{
+    private readonly byte[][] _frames;
+    private int _i;
+    public ReplaySource(RichSource src, int count) { _frames = Enumerable.Range(0, count).Select(src.FrameAt).ToArray(); }
+    public int Width => 1280;
+    public int Height => 720;
+    public bool Done => _i >= _frames.Length;
+    public byte[] NextFrame() => _frames[Math.Min(_i++, _frames.Length - 1)];
 }
 
 /// <summary>Imagem que se mexe por um tempo e depois CONGELA, como um jogo que trava logo depois de abrir.</summary>

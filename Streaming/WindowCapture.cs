@@ -139,8 +139,18 @@ internal sealed class WindowCapture : IDisposable
             }
         }
 
-        Native.SetStretchBltMode(destDc, Native.COLORONCOLOR);
-        Native.StretchBlt(destDc, dx, dy, dw, dh, _memDc, 0, 0, Width, Height, Native.SRCCOPY);
+        if (dw == Width && dh == Height)
+        {
+            Native.BitBlt(destDc, dx, dy, dw, dh, _memDc, 0, 0, Native.SRCCOPY); // 1:1: cópia direta, sem reamostrar
+        }
+        else
+        {
+            // Só reduz aqui quando o jogo é maior que a transmissão. HALFTONE tira a média dos pixels (sem serrilhado);
+            // COLORONCOLOR simplesmente jogava pixels fora.
+            Native.SetStretchBltMode(destDc, Native.HALFTONE);
+            Native.SetBrushOrgEx(destDc, 0, 0, IntPtr.Zero);
+            Native.StretchBlt(destDc, dx, dy, dw, dh, _memDc, 0, 0, Width, Height, Native.SRCCOPY);
+        }
     }
 
     public void Dispose()
