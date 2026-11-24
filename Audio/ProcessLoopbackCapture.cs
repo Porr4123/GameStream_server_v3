@@ -30,6 +30,10 @@ internal sealed class ProcessLoopbackCapture : IDisposable
     private IAudioCaptureClient? _capture;
     private EventWaitHandle? _event;
     private bool _started;
+    private long _loud;
+
+    /// <summary>Pacotes que tinham som de verdade (não só zeros).</summary>
+    public long LoudPackets => Interlocked.Read(ref _loud);
 
     /// <summary>Abre a captura do processo. Lança exceção com a causa se o Windows recusar.</summary>
     public void Open(int processId)
@@ -119,6 +123,7 @@ internal sealed class ProcessLoopbackCapture : IDisposable
             var chunk = new byte[bytes];
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && bytes > 0) Marshal.Copy(data, chunk, 0, bytes);
             _capture.ReleaseBuffer(got);
+            if (bytes > 0 && chunk.AsSpan().IndexOfAnyExcept((byte)0) >= 0) Interlocked.Increment(ref _loud);
 
             sink.Write(chunk, 0, bytes);
             total += bytes;

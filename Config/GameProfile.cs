@@ -62,6 +62,13 @@ public sealed class GameProfile
     public int AudioBitrateKbps { get; set; } = 128;
 
     /// <summary>
+    /// true (padrão): com o som do celular ligado, o jogo fica MUDO nas caixas do PC do servidor (o celular continua ouvindo).
+    /// Só silencia o jogo e os processos filhos dele, e volta ao normal quando a sessão acaba.
+    /// Se o celular ficar sem som com isto ligado, ponha false.
+    /// </summary>
+    public bool MuteGameOnServer { get; set; } = true;
+
+    /// <summary>
     /// "printwindow" (padrão): captura só a área do jogo, mesmo com a janela escondida.
     /// "screen": copia da tela (a janela precisa estar visível e sem nada por cima; use hideWindow false).
     /// "gdigrab" continua aceito como outro nome de "screen".

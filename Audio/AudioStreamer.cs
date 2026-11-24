@@ -20,6 +20,7 @@ internal sealed class AudioStreamer : IDisposable
     private Thread? _captureThread;
     private Task? _readTask;
     private long _pcmBytes, _silenceBytes, _frames;
+    private ProcessLoopbackCapture? _cap;
 
     public AudioStreamer(string ffmpegPath, int bitrateKbps, long affinityMask, WsSender sender, ILogger log, CancellationToken ct)
     {
@@ -32,6 +33,8 @@ internal sealed class AudioStreamer : IDisposable
     }
 
     public long Frames => Interlocked.Read(ref _frames);
+    public long LoudPackets => _cap?.LoudPackets ?? _loudFinal;
+    private long _loudFinal;
     public long PcmBytes => Interlocked.Read(ref _pcmBytes);
     public long SilenceBytes => Interlocked.Read(ref _silenceBytes);
 
@@ -42,6 +45,7 @@ internal sealed class AudioStreamer : IDisposable
         try
         {
             capture.Open(processId);
+            _cap = capture;
 
             var psi = new ProcessStartInfo(_ffmpegPath)
             {
@@ -136,6 +140,7 @@ internal sealed class AudioStreamer : IDisposable
         }
         finally
         {
+            _loudFinal = capture.LoudPackets;
             capture.Dispose();
             try { ffmpeg.StandardInput.Close(); } catch { /* ignora */ }
         }

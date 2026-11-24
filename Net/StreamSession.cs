@@ -40,8 +40,10 @@ public sealed class StreamSession
     private volatile InputInjector? _input;
     private LaunchedGame? _game;
     private AudioStreamer? _audioStreamer;
+    private GameAudioMuter? _muter;
     private WsSender? _audioSender;
     private long _audioFramesFinal;
+    private long _audioLoudFinal;
     private bool _audioEnabled;
 
     // Estado que o monitor (diagnóstico) lê de outras tarefas.
@@ -191,10 +193,12 @@ public sealed class StreamSession
             // 1º o jogo. Uma janela que parou de responder pode deixar a captura (PrintWindow) presa dentro do
             // compositor; ela só solta quando o jogo morre. Esperar o codificador antes de matar o jogo travava
             // a sessão para sempre e o servidor ficava "ocupado" para os próximos clientes.
+            Interlocked.Exchange(ref _muter, null)?.Dispose(); // devolve o som do jogo ANTES de fechá-lo
             Interlocked.Exchange(ref _game, null)?.Dispose();
             if (_audioStreamer is { } audio)
             {
                 _audioFramesFinal = audio.Frames;
+                _audioLoudFinal = audio.LoudPackets;
                 audio.Dispose();
             }
             encoder?.Dispose();
@@ -247,8 +251,10 @@ public sealed class StreamSession
         if (_audioEnabled)
         {
             var a = sender.AudioTotals;
-            _log.LogInformation("Som: {Frames} quadros AAC capturados, {Sent} enviados ({Kb} KB){Hint}", _audioFramesFinal, a.Frames, a.Bytes / 1024,
-                _audioFramesFinal == 0 ? " - nenhum áudio foi capturado (o som não ligou nesta sessão)" : "");
+            _log.LogInformation("Som: {Frames} quadros AAC capturados, {Sent} enviados ({Kb} KB), {Loud} pacotes com som de verdade{Hint}",
+                _audioFramesFinal, a.Frames, a.Bytes / 1024, _audioLoudFinal,
+                _audioFramesFinal == 0 ? " - nenhum áudio foi capturado (o som não ligou nesta sessão)"
+                : _audioLoudFinal == 0 && _profile.MuteGameOnServer ? " - só silêncio chegou ao celular: se o jogo tocou algo, tente \"muteGameOnServer\": false" : "");
         }
     }
 
@@ -431,7 +437,17 @@ public sealed class StreamSession
             if (_audioEnabled && _audioSender is { } audioSender)
             {
                 var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct);
-                if (streamer.TryStart(game.Process.Id)) _audioStreamer = streamer;
+                if (streamer.TryStart(game.Process.Id))
+                {
+                    _audioStreamer = streamer;
+                    // Só cala o PC se o som de fato está indo para o celular: senão o jogo ficaria mudo em todo lugar.
+                    if (_profile.MuteGameOnServer && GameAudioMuter.IsSupported)
+                    {
+                        var muter = new GameAudioMuter(game.Process.Id, _log);
+                        muter.Start();
+                        _muter = muter;
+                    }
+                }
             }
             _log.LogInformation("A janela do jogo apareceu após {Ms} ms: {Desc}", launchWatch.ElapsedMilliseconds,
                 GameProbe.Describe(game));
@@ -486,6 +502,7 @@ public sealed class StreamSession
                 _input?.ReleaseAll();
                 _input = null;
                 _gameProbe = null;
+                Interlocked.Exchange(ref _muter, null)?.Dispose();
                 Interlocked.Exchange(ref _game, null)?.Dispose();
                 _audioStreamer?.Dispose();
                 composer.ShowStatus("Jogo encerrado.");

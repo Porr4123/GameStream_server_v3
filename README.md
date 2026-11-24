@@ -276,3 +276,11 @@ O som do jogo vai para o celular junto com o vídeo, pelo mesmo WebSocket.
 - **game.json**: `"audio": true|false` e `"audioBitrateKbps": 32..320`.
 - Se a captura falhar, o jogo segue sem som e o log diz o motivo (`Som DESLIGADO nesta sessão`). No fim da sessão o log mostra `Som: N quadros AAC capturados`. Se N for 0, o som não ligou.
 - Se o jogo ainda não tocou nada, o servidor envia silêncio para manter o fluxo contínuo.
+
+### Som do jogo mudo no PC do servidor (`muteGameOnServer`)
+
+Com o som do celular ligado, o jogo fica **mudo nas caixas do PC** (padrão `"muteGameOnServer": true`). É o mesmo que "silenciar o aplicativo" no Mixer de volume do Windows, só para o processo do jogo e os filhos dele; o resto do PC continua com som. O silêncio é desfeito quando a sessão termina (e antes de o jogo ser fechado).
+
+- Só silencia se o som estiver de fato indo para o celular (`audio` ligado e captura funcionando).
+- No log: `Som do jogo silenciado no PC do servidor`. No resumo: `N pacotes com som de verdade`. Se for 0 com o jogo tocando, o Windows está calando a captura junto: ponha `"muteGameOnServer": false` no `game.json`.
+- Se o servidor travar e o jogo ficar mudo na próxima vez, tire o mudo do aplicativo no Mixer de volume do Windows.
