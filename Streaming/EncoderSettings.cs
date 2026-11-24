@@ -9,6 +9,9 @@ namespace GameStream.Server.Streaming;
 internal sealed record EncoderSettings(
     int OutWidth, int OutHeight, int Fps, int BitrateKbps, int Crf, string Preset, string Profile, string ScaleFlags, int Threads)
 {
+    /// <summary>Como o jogo ocupa o quadro: inteiro com faixas (Fit), cortando as bordas (Fill) ou esticado (Stretch).</summary>
+    public FitMode Mode { get; init; } = FitMode.Fit;
+
     public static readonly string[] Presets = { "ultrafast", "superfast", "veryfast", "faster", "fast", "medium" };
     public static readonly string[] Profiles = { "baseline", "main", "high" };
     public static readonly string[] ScaleModes = { "bicubic", "lanczos", "bilinear", "neighbor" };
@@ -40,6 +43,16 @@ internal sealed record EncoderSettings(
     {
         var v = (value ?? "").Trim().ToLowerInvariant();
         return allowed.Contains(v) ? v : fallback;
+    }
+
+    /// <summary>Menor tamanho (par) que COBRE outW x outH mantendo a proporção de inW x inH (o excesso é cortado).</summary>
+    public static (int W, int H) Cover(int inW, int inH, int outW, int outH)
+    {
+        double scale = Math.Max((double)outW / inW, (double)outH / inH);
+        int w = (int)Math.Ceiling(inW * scale), h = (int)Math.Ceiling(inH * scale);
+        w = Math.Max(outW, (w + 1) & ~1);
+        h = Math.Max(outH, (h + 1) & ~1);
+        return (w, h);
     }
 
     /// <summary>Maior tamanho (par) que cabe em outW x outH mantendo a proporção de inW x inH. Nunca aumenta além do necessário para caber.</summary>

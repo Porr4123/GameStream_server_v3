@@ -29,14 +29,19 @@ internal sealed class FfmpegEncoder : IDisposable
     private readonly ILogger? _log;
     private readonly VideoProbe? _probe;
     private readonly int _outW, _outH;
+    private readonly int? _bitrateKbps;
+    private readonly FitMode _fit;
     private Process? _process;
     private volatile bool _sizeChanged;
 
     /// <param name="affinityMask">Núcleos permitidos ao ffmpeg (os que o jogo não usa). 0 = sem restrição.</param>
     /// <param name="outWidth">Tamanho da transmissão (0 = o tamanho que a origem tem no começo).</param>
     public FfmpegEncoder(string ffmpegPath, IFrameSource source, GameProfile profile, int fps, ulong affinityMask,
-        ILogger? log = null, VideoProbe? probe = null, int outWidth = 0, int outHeight = 0)
+        ILogger? log = null, VideoProbe? probe = null, int outWidth = 0, int outHeight = 0,
+        int? bitrateKbps = null, FitMode fit = FitMode.Fit)
     {
+        _bitrateKbps = bitrateKbps;
+        _fit = fit;
         _probe = probe;
         _ffmpegPath = ffmpegPath;
         _source = source;
@@ -51,7 +56,11 @@ internal sealed class FfmpegEncoder : IDisposable
     /// <summary>Parâmetros efetivos (depois de validar o game.json).</summary>
     public EncoderSettings Settings =>
         EncoderSettings.From(_profile, _outW, _outH, _fps,
-            _profile.EncoderThreads > 0 ? _profile.EncoderThreads : EncoderSettings.AutoThreads(_affinityMask));
+            _profile.EncoderThreads > 0 ? _profile.EncoderThreads : EncoderSettings.AutoThreads(_affinityMask)) with
+        {
+            Mode = _fit,
+            BitrateKbps = Math.Max(200, _bitrateKbps ?? _profile.BitrateKbps)
+        };
 
     /// <summary>
     /// Roda até o ffmpeg terminar ou o token ser cancelado. <paramref name="onAccessUnit"/> recebe um quadro por vez
@@ -61,8 +70,8 @@ internal sealed class FfmpegEncoder : IDisposable
     {
         var settings = Settings;
         _log?.LogInformation(
-            "Codificação: saída {W}x{H} a {Fps} fps, x264 {Preset}, perfil {Profile}, {Rate}, ajuste de tamanho {Scale}, {Threads} thread(s), nível {Level}",
-            settings.OutWidth, settings.OutHeight, settings.Fps, settings.Preset, settings.Profile,
+            "Codificação: saída {W}x{H} a {Fps} fps ({Fit}), x264 {Preset}, perfil {Profile}, {Rate}, ajuste de tamanho {Scale}, {Threads} thread(s), nível {Level}",
+            settings.OutWidth, settings.OutHeight, settings.Fps, settings.Mode, settings.Preset, settings.Profile,
             settings.Crf > 0 ? $"CRF {settings.Crf} com teto de {settings.BitrateKbps} kbps" : $"{settings.BitrateKbps} kbps fixos",
             settings.ScaleFlags, settings.Threads, H264Level.For(settings.OutWidth, settings.OutHeight, settings.Fps));
 
@@ -239,15 +248,31 @@ internal sealed class FfmpegEncoder : IDisposable
     internal static List<string> BuildArgs(EncoderSettings s, int inW, int inH)
     {
         int outW = s.OutWidth, outH = s.OutHeight;
-        var (fitW, fitH) = EncoderSettings.Fit(inW, inH, outW, outH);
         int kbps = s.BitrateKbps;
 
         // Ajuste de tamanho feito pelo ffmpeg (bicubic etc.) em vez do GDI: sem serrilhado e sem borrar à toa.
         // A conversão para YUV usa a matriz BT.709 e faixa "tv", e a mesma informação vai marcada no fluxo (VUI),
         // então o celular reproduz as cores certas (sem isso, a cor sai levemente deslocada em HD).
-        string vf =
-            $"scale={fitW}:{fitH}:flags={s.ScaleFlags}+accurate_rnd+full_chroma_int:out_color_matrix=bt709:out_range=tv," +
-            $"pad={outW}:{outH}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p";
+        string conv = $"flags={s.ScaleFlags}+accurate_rnd+full_chroma_int:out_color_matrix=bt709:out_range=tv";
+        string vf;
+        switch (s.Mode)
+        {
+            case FitMode.Fill: // cobre o quadro e corta o que passar das bordas
+            {
+                var (cw, ch) = EncoderSettings.Cover(inW, inH, outW, outH);
+                vf = $"scale={cw}:{ch}:{conv},crop={outW}:{outH},format=yuv420p";
+                break;
+            }
+            case FitMode.Stretch: // ocupa tudo deformando
+                vf = $"scale={outW}:{outH}:{conv},format=yuv420p";
+                break;
+            default: // jogo inteiro, faixas pretas se a proporção for diferente
+            {
+                var (fw, fh) = EncoderSettings.Fit(inW, inH, outW, outH);
+                vf = $"scale={fw}:{fh}:{conv},pad={outW}:{outH}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p";
+                break;
+            }
+        }
 
         var x264 = "aud=1:repeat-headers=1" + (s.Threads == 1 ? ":slices=1" : "");
 

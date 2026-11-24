@@ -191,6 +191,14 @@ Opções no `game.json` do jogo:
 
 Se o PC não acompanhar, o log mostra `FPS_BAIXO` dizendo se o gargalo é a captura ou a codificação. Para aliviar: `"preset": "ultrafast"`, `"fps": 30` ou `"streamWidth": 960, "streamHeight": 540`. Se algum celular não decodificar, use `"h264Profile": "baseline"`.
 
+## Adaptação à tela do cliente (`sw`, `sh`, `fit`)
+
+O cliente pode informar a tela do aparelho ao conectar: `ws://<ip>:5055/stream?game=<id>&pin=<pin>&sw=<largura>&sh=<altura>&fit=fit|fill|stretch`. Sem esses parâmetros vale o tamanho do `game.json`.
+
+- **Tamanho do quadro:** parte da altura do perfil (`streamHeight`) e ajusta a largura para a proporção da tela (ex.: tela 20:9 com perfil 1280x720 vira ~1280x576). A quantidade de pixels nunca passa da do perfil, então o custo de CPU e de rede é o mesmo. O teto de taxa acompanha os pixels (0,5x a 2x o `bitrateKbps`). Proporção limitada a 1:1 até 2,5:1. O tamanho fica fixo durante a sessão.
+- **`fit`** (padrão): jogo inteiro, com faixas pretas se a proporção for diferente. **`fill`**: ocupa tudo cortando as bordas. **`stretch`**: ocupa tudo deformando.
+- O ajuste é feito pelo ffmpeg (bicubic), igual para os três modos.
+
 ## Autoteste
 
 Confere o caminho do vídeo inteiro **sem celular e sem jogo**: ffmpeg real com quadros sintéticos, divisão em quadros,
@@ -213,7 +221,7 @@ Libere a porta 5055 no firewall do Windows quando for testar pela rede.
 
 ## Protocolo
 
-`ws://<ip>:5055/stream?game=<id>&pin=<pin>`
+`ws://<ip>:5055/stream?game=<id>&pin=<pin>[&sw=<largura da tela>&sh=<altura da tela>&fit=fit|fill|stretch]`
 
 | Direção | Formato |
 |---|---|

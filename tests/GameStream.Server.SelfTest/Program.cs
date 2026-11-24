@@ -32,6 +32,8 @@ TestLevels();
 await TestSlowConsumerAsync();
 await TestRealEncoderAsync();
 TestEncoderSettings();
+TestStreamGeometry();
+await TestFitModesAsync();
 await TestQualityEncoderAsync();
 TestKeyPolicy();
 TestResourceLimits();
@@ -463,6 +465,94 @@ void TestKeyPolicy()
     Check(def.Layout.SelectMany(b => (b.Keys ?? new List<string>()).Concat(b.Key is null ? Array.Empty<string>() : new[] { b.Key }))
               .All(k => KeyMap.TryGet(k, out _)), "e o layout padrão também (nenhum botão morto)");
     Check(def.HideMode == "transparent", "ocultar padrão: transparente");
+}
+
+void TestStreamGeometry()
+{
+    Section("Tela do cliente: proporção do quadro (sw/sh/fit)");
+    Check(StreamGeometry.CanvasSize(1280, 720, 0, 0) == (1280, 720), "sem tela informada: tamanho do perfil");
+    Check(StreamGeometry.CanvasSize(1280, 720, 1920, 1080) == (1280, 720), "tela 16:9: o mesmo 1280x720");
+
+    var wide = StreamGeometry.CanvasSize(1280, 720, 2400, 1080);
+    double ratio = (double)wide.Width / wide.Height;
+    Check(Math.Abs(ratio - 2400.0 / 1080) < 0.03 && wide.Width % 2 == 0 && wide.Height % 2 == 0, $"tela 20:9 (2400x1080): quadro {wide.Width}x{wide.Height} tem a proporção da tela");
+    Check(StreamGeometry.Macroblocks(wide.Width, wide.Height) <= StreamGeometry.Macroblocks(1280, 720), "e não passa da quantidade de pixels do perfil (mesmo custo de CPU/rede)");
+
+    var tablet = StreamGeometry.CanvasSize(1280, 720, 1600, 1200);
+    Check(tablet == (960, 720), $"tela 4:3: mantém a altura do perfil ({tablet.Width}x{tablet.Height})");
+    var tall = StreamGeometry.CanvasSize(1280, 720, 1080, 2400);
+    Check(tall.Width >= tall.Height, "tela em pé é tratada como proporção mínima 1:1 (o cliente joga deitado)");
+    var extreme = StreamGeometry.CanvasSize(1280, 720, 5000, 1000);
+    Check(Math.Abs((double)extreme.Width / extreme.Height - 2.5) < 0.05, "proporção muito comprida é limitada a 2,5:1");
+    Check(StreamGeometry.CanvasSize(640, 480, 2400, 1080) is { Width: > 0 } c && StreamGeometry.Macroblocks(c.Width, c.Height) <= StreamGeometry.Macroblocks(640, 480),
+        "perfil pequeno (640x480) também respeita o próprio orçamento de pixels");
+
+    Check(StreamGeometry.ScaleBitrate(8000, 1280 * 720, 640, 360) == 4000, "teto de taxa cai com menos pixels (mínimo 0,5x)");
+    Check(StreamGeometry.ScaleBitrate(8000, 1280 * 720, 5000, 3000) == 16000, "e sobe com mais pixels (máximo 2x)");
+    Check(StreamGeometry.ParseFit("FILL") == FitMode.Fill && StreamGeometry.ParseFit(" stretch ") == FitMode.Stretch
+          && StreamGeometry.ParseFit("fit") == FitMode.Fit && StreamGeometry.ParseFit(null) == FitMode.Fit && StreamGeometry.ParseFit("x; rm") == FitMode.Fit,
+        "fit/fill/stretch; qualquer outro texto vira fit");
+
+    Check(StreamGeometry.PreScale(1280, 720, 1920, 1080, FitMode.Fit) is > 0.66 and < 0.67, "jogo 1080p em quadro 720p: reduz para 2/3 antes do ffmpeg");
+    Check(StreamGeometry.PreScale(1280, 720, 640, 480, FitMode.Fit) == 1.0, "jogo menor que o quadro: nunca aumenta no Windows (o ffmpeg aumenta)");
+    Check(StreamGeometry.PreScale(1280, 720, 1920, 1200, FitMode.Fill) > StreamGeometry.PreScale(1280, 720, 1920, 1200, FitMode.Fit),
+        "Fill reduz menos que Fit (precisa cobrir o quadro)");
+
+    var cover = EncoderSettings.Cover(640, 480, 1280, 720);
+    Check(cover == (1280, 960), $"Fill de 640x480 em 1280x720 = escala para {cover.W}x{cover.H} e corta");
+    var fill = string.Join(' ', FfmpegEncoder.BuildArgs(EncoderSettings.From(new GameProfile(), 1280, 720, 60, 2) with { Mode = FitMode.Fill }, 640, 480));
+    Check(fill.Contains("scale=1280:960") && fill.Contains("crop=1280:720") && !fill.Contains("pad="), "Fill: scale + crop, sem faixas");
+    var stretch = string.Join(' ', FfmpegEncoder.BuildArgs(EncoderSettings.From(new GameProfile(), 1280, 720, 60, 2) with { Mode = FitMode.Stretch }, 640, 480));
+    Check(stretch.Contains("scale=1280:720") && !stretch.Contains("pad=") && !stretch.Contains("crop="), "Stretch: scale direto para o tamanho final");
+}
+
+async Task TestFitModesAsync()
+{
+    Section("Modos fit / fill / stretch com ffmpeg de verdade");
+    var ffmpeg = FindTool("ffmpeg");
+    if (ffmpeg is null) { Console.WriteLine("  ffmpeg não encontrado: parte ignorada."); return; }
+
+    // Jogo 640x480 todo BRANCO dentro de um quadro 1280x720 (16:9): em Fit sobram faixas pretas dos lados.
+    foreach (var mode in new[] { FitMode.Fit, FitMode.Fill, FitMode.Stretch })
+    {
+        var ws = new FakeWebSocket();
+        var sender = new WsSender(ws, 60);
+        var src = new SolidSource(640, 480, 255);
+        var enc = new FfmpegEncoder(ffmpeg, src, new GameProfile { Fps = 30 }, 30, 0, null, null, 1280, 720, null, mode);
+        using var cts = new CancellationTokenSource();
+        var vt = sender.RunVideoAsync(cts.Token);
+        var et = enc.RunAsync(sender.EnqueueVideo, cts.Token);
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        cts.Cancel(); enc.Dispose();
+        foreach (var t in new[] { et, vt }) try { await t; } catch (OperationCanceledException) { }
+
+        var bytes = ws.Sent.Where(m => m.Type == WebSocketMessageType.Binary).SelectMany(m => m.Data.AsSpan(2).ToArray()).ToArray();
+        var dir = Path.Combine(Path.GetTempPath(), "gamestream-selftest-fit-" + Environment.ProcessId + "-" + mode);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var f = Path.Combine(dir, "x.h264");
+            await File.WriteAllBytesAsync(f, bytes);
+            var psi = new ProcessStartInfo(ffmpeg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var a in new[] { "-v", "error", "-f", "h264", "-i", f, "-frames:v", "1", "-vf", "format=gray", "-f", "rawvideo", "pipe:1" }) psi.ArgumentList.Add(a);
+            using var pr = Process.Start(psi)!;
+            using var ms = new MemoryStream();
+            await pr.StandardOutput.BaseStream.CopyToAsync(ms);
+            await pr.WaitForExitAsync();
+            var gray = ms.ToArray();
+
+            Check(gray.Length == 1280 * 720, $"{mode}: o quadro decodificado é 1280x720 ({gray.Length} bytes)");
+            if (gray.Length != 1280 * 720) continue;
+            byte At(int x, int y) => gray[y * 1280 + x];
+            bool leftBlack = At(10, 360) < 40 && At(1269, 360) < 40;
+            bool centerWhite = At(640, 360) > 200;
+            bool cornerWhite = At(10, 10) > 200 && At(1269, 709) > 200;
+
+            if (mode == FitMode.Fit) Check(leftBlack && centerWhite, "Fit: faixas pretas nas laterais e o jogo inteiro no centro");
+            else Check(!leftBlack && cornerWhite && centerWhite, $"{mode}: a imagem ocupa o quadro todo, sem faixas pretas");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { /* ignora */ } }
+    }
 }
 
 void TestResourceLimits()
@@ -931,6 +1021,21 @@ sealed class SyntheticSource : IFrameSource
             }
         return _frame;
     }
+}
+
+/// <summary>Quadro de uma cor só.</summary>
+sealed class SolidSource : IFrameSource
+{
+    private readonly byte[] _frame;
+    public SolidSource(int w, int h, byte value)
+    {
+        Width = w; Height = h;
+        _frame = new byte[w * h * 4];
+        Array.Fill(_frame, value);
+    }
+    public int Width { get; }
+    public int Height { get; }
+    public byte[] NextFrame() => _frame;
 }
 
 /// <summary>Muda de tamanho cada vez que <see cref="Next"/> é chamado (tela de espera -> jogo -> outro tamanho).</summary>

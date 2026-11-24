@@ -17,6 +17,7 @@ internal sealed class FrameComposer : IFrameSource, IDisposable
     private readonly int _streamW;
     private readonly int _streamH;
     private readonly string? _logoPath;
+    private readonly FitMode _fit;
 
     // Superfície atual (muda de tamanho quando o jogo aparece ou some).
     private int _w;
@@ -35,8 +36,9 @@ internal sealed class FrameComposer : IFrameSource, IDisposable
     public int Height { get { lock (_lock) return _h; } }
 
     /// <param name="width">Tamanho da transmissão (também o da tela de espera).</param>
-    public FrameComposer(int width, int height, string? logoPath)
+    public FrameComposer(int width, int height, string? logoPath, FitMode fit = FitMode.Fit)
     {
+        _fit = fit;
         _streamW = width;
         _streamH = height;
         _logoPath = logoPath;
@@ -132,7 +134,7 @@ internal sealed class FrameComposer : IFrameSource, IDisposable
 
             // Tamanho nativo do jogo; só reduz (mantendo a proporção) se for maior que a transmissão.
             // Aumentar fica por conta do ffmpeg (bicubic), que faz melhor e sem custo na captura.
-            double scale = Math.Min(1.0, Math.Min((double)_streamW / capture.Width, (double)_streamH / capture.Height));
+            double scale = StreamGeometry.PreScale(_streamW, _streamH, capture.Width, capture.Height, _fit);
             int w = Math.Max(16, (int)(capture.Width * scale)) & ~1;
             int h = Math.Max(16, (int)(capture.Height * scale)) & ~1;
 

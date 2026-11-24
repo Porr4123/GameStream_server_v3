@@ -33,6 +33,7 @@ public sealed class StreamSession
     private readonly ILogger _log;
     private readonly string _clientInfo;
     private readonly string _contentRoot;
+    private readonly ClientDisplay _display;
 
     private volatile InputInjector? _input;
     private LaunchedGame? _game;
@@ -50,8 +51,9 @@ public sealed class StreamSession
     private readonly Stopwatch _sessionWatch = Stopwatch.StartNew();
 
     public StreamSession(GameProfile profile, ServerOptions options, string ffmpegPath, ILogger log,
-        string clientInfo = "", string? contentRoot = null)
+        string clientInfo = "", string? contentRoot = null, ClientDisplay display = default)
     {
+        _display = display;
         _profile = profile;
         _options = options;
         _ffmpegPath = ffmpegPath;
@@ -65,10 +67,16 @@ public sealed class StreamSession
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         var ct = cts.Token;
 
-        // Tamanho fixo da transmissão (par, exigência do H.264 yuv420p). 0 no game.json = 640x480.
-        int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 1280) & ~1;
-        int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 720) & ~1;
+        // Tamanho da transmissão (par, exigência do H.264 yuv420p). 0 no game.json = 1280x720. Fica fixo durante a sessão.
+        // Se o cliente informou a tela, o quadro ganha a proporção dela (mesma quantidade de pixels do perfil), para o
+        // vídeo ocupar o celular sem faixas pretas embutidas.
+        int profileWidth = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 1280) & ~1;
+        int profileHeight = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 720) & ~1;
+        var (width, height) = StreamGeometry.CanvasSize(profileWidth, profileHeight, _display.ScreenWidth, _display.ScreenHeight);
+        int bitrateKbps = StreamGeometry.ScaleBitrate(_profile.BitrateKbps, profileWidth * profileHeight, width, height);
         int fps = Math.Clamp(_profile.Fps, 1, 60);
+        _log.LogInformation("Quadro {W}x{H} (perfil {PW}x{PH}; tela do cliente {SW}x{SH}, ajuste {Fit}; teto {Kbps} kbps)",
+            width, height, profileWidth, profileHeight, _display.ScreenWidth, _display.ScreenHeight, _display.Fit, bitrateKbps);
 
         // Fila de envio curta (~0,5 s): se o celular/Wi-Fi não acompanharem, descarta até o próximo keyframe
         // em vez de parar o ffmpeg e acumular atraso.
@@ -118,7 +126,7 @@ public sealed class StreamSession
 
         try
         {
-            composer = new FrameComposer(width, height, FindLogo());
+            composer = new FrameComposer(width, height, FindLogo(), _display.Fit);
             composer.ShowStatus("Iniciando o jogo...");
 
             // O cliente recebe algo imediatamente: "hello" agora e vídeo logo em seguida, mesmo sem jogo.
@@ -127,7 +135,7 @@ public sealed class StreamSession
 
             videoTask = sender.RunVideoAsync(ct);
 
-            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe, width, height);
+            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe, width, height, bitrateKbps, _display.Fit);
             encoderTask = encoder.RunAsync(sender.EnqueueVideo, ct);
 
             // Recebe desde já: sem isso, o ping do cliente ficava sem resposta enquanto o jogo abria.

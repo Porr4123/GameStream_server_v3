@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using GameStream.Server.Config;
 using GameStream.Server.Diagnostics;
 using GameStream.Server.Net;
+using GameStream.Server.Streaming;
 
 // ---- Comando: dotnet run -- novo "Nome do Jogo"  (cria uma pasta esqueleto e sai) ----
 if (args.Length >= 1 && args[0].Equals("novo", StringComparison.OrdinalIgnoreCase))
@@ -171,8 +172,15 @@ app.MapGet("/stream", async (HttpContext ctx) =>
     }
     try
     {
+        // Tela do cliente (opcional): ?sw=2400&sh=1080&fit=fit|fill|stretch. Sem isso, vale o tamanho do perfil.
+        var q = ctx.Request.Query;
+        int.TryParse(q["sw"].ToString(), out int sw);
+        int.TryParse(q["sh"].ToString(), out int sh);
+        if (sw < 0 || sw > 10000 || sh < 0 || sh > 10000) sw = sh = 0;
+        var display = new ClientDisplay(sw, sh, StreamGeometry.ParseFit(q["fit"]));
+
         using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-        await new StreamSession(profile, options, ffmpeg, app.Logger, clientInfo, root).RunAsync(ws, ctx.RequestAborted);
+        await new StreamSession(profile, options, ffmpeg, app.Logger, clientInfo, root, display).RunAsync(ws, ctx.RequestAborted);
     }
     finally
     {
