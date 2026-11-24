@@ -301,7 +301,7 @@ void TestEncoderSettings()
     Check(line.Contains("-profile:v main") && line.Contains("-level:v 3.2") && line.Contains("-preset veryfast"), "perfil Main, nível 3.2 (720p60), preset veryfast");
     Check(line.Contains("out_color_matrix=bt709") && line.Contains("-colorspace bt709") && line.Contains("-color_range tv"), "cor BT.709 na conversão e marcada no fluxo");
     Check(!line.Contains("slices=1"), "com várias threads o x264 pode dividir o quadro (mais rápido)");
-    Check(FfmpegEncoder.BuildArgs(EncoderSettings.From(d, 1280, 720, 60, 1), 1280, 720).Contains("aud=1:repeat-headers=1:slices=1"), "com 1 thread: 1 slice por quadro");
+    Check(FfmpegEncoder.BuildArgs(EncoderSettings.From(d, 1280, 720, 60, 1), 1280, 720).Contains("aud=1:repeat-headers=1:slices=1:colorprim=bt709:transfer=bt709:colormatrix=bt709"), "com 1 thread: 1 slice por quadro e VUI BT.709");
     Check(string.Join(' ', FfmpegEncoder.BuildArgs(EncoderSettings.From(new GameProfile { Crf = 0, BitrateKbps = 3000 }, 1280, 720, 30, 1), 1280, 720)).Contains("-b:v 3000k"),
         "crf 0 = taxa fixa");
 }

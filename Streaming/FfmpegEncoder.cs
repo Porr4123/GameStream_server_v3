@@ -274,7 +274,8 @@ internal sealed class FfmpegEncoder : IDisposable
             }
         }
 
-        var x264 = "aud=1:repeat-headers=1" + (s.Threads == 1 ? ":slices=1" : "");
+        var x264 = "aud=1:repeat-headers=1" + (s.Threads == 1 ? ":slices=1" : "") +
+            ":colorprim=bt709:transfer=bt709:colormatrix=bt709";
 
         var args = new List<string>
         {
