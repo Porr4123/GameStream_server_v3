@@ -68,6 +68,9 @@ public sealed class GameProfile
     /// </summary>
     public bool MuteGameOnServer { get; set; } = true;
 
+    /// <summary>true (padrão por enquanto): ao ligar o som, toca um bipe curto no celular. Serve para separar "o caminho do som funciona" de "o jogo não está sendo capturado". Depois de testar, ponha false.</summary>
+    public bool AudioBeep { get; set; } = true;
+
     /// <summary>
     /// "printwindow" (padrão): captura só a área do jogo, mesmo com a janela escondida.
     /// "screen": copia da tela (a janela precisa estar visível e sem nada por cima; use hideWindow false).

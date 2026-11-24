@@ -21,9 +21,11 @@ internal sealed class AudioStreamer : IDisposable
     private Task? _readTask;
     private long _pcmBytes, _silenceBytes, _frames;
     private ProcessLoopbackCapture? _cap;
+    private readonly bool _beep;
 
-    public AudioStreamer(string ffmpegPath, int bitrateKbps, long affinityMask, WsSender sender, ILogger log, CancellationToken ct)
+    public AudioStreamer(string ffmpegPath, int bitrateKbps, long affinityMask, WsSender sender, ILogger log, CancellationToken ct, bool beep = true)
     {
+        _beep = beep;
         _ffmpegPath = ffmpegPath;
         _bitrateKbps = Math.Clamp(bitrateKbps, 32, 320);
         _affinityMask = affinityMask;
@@ -106,6 +108,29 @@ internal sealed class AudioStreamer : IDisposable
             var clock = Stopwatch.StartNew();
             long framesWritten = 0;
 
+            // Bipe de teste (0,4 s, 440 Hz) logo ao ligar: se o celular apitar, o caminho servidor -> celular funciona e
+            // qualquer mudez vem da captura do jogo. Se não apitar, o problema está no envio ou no app.
+            if (_beep)
+            {
+                int beepFrames = ProcessLoopbackCapture.SampleRate * 4 / 10;
+                var beep = new byte[beepFrames * ProcessLoopbackCapture.BytesPerFrame];
+                for (int i = 0; i < beepFrames; i++)
+                {
+                    double fade = Math.Min(1.0, Math.Min(i, beepFrames - i) / 2400.0);
+                    short v = (short)(Math.Sin(2 * Math.PI * 440 * i / ProcessLoopbackCapture.SampleRate) * 9000 * fade);
+                    int o = i * ProcessLoopbackCapture.BytesPerFrame;
+                    beep[o] = beep[o + 2] = (byte)(v & 0xFF);
+                    beep[o + 1] = beep[o + 3] = (byte)((v >> 8) & 0xFF);
+                }
+                input.Write(beep, 0, beep.Length);
+                framesWritten += beepFrames;
+                input.Flush();
+                _log.LogInformation("Bipe de teste de som enviado ao celular (0,4 s, 440 Hz).");
+            }
+
+            var statWatch = Stopwatch.StartNew();
+            int statLines = 0;
+
             while (!_cts.IsCancellationRequested)
             {
                 int bytes = capture.Read(input, 10);
@@ -131,6 +156,15 @@ internal sealed class AudioStreamer : IDisposable
                     framesWritten = 0;
                 }
                 input.Flush();
+
+                if (statLines < 6 && statWatch.Elapsed.TotalSeconds >= 5)
+                {
+                    statWatch.Restart();
+                    statLines++;
+                    var (sentFrames, _) = _sender.AudioTotals;
+                    _log.LogInformation("Som (5 s): {Frames} quadros AAC gerados, {Sent} enviados, {Loud} pacotes com som do jogo, {Silence} KB de silêncio completado.",
+                        Frames, sentFrames, capture.LoudPackets, SilenceBytes / 1024);
+                }
             }
         }
         catch (Exception ex)

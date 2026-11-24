@@ -436,7 +436,7 @@ public sealed class StreamSession
 
             if (_audioEnabled && _audioSender is { } audioSender)
             {
-                var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct);
+                var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct, _profile.AudioBeep);
                 if (streamer.TryStart(game.Process.Id))
                 {
                     _audioStreamer = streamer;
