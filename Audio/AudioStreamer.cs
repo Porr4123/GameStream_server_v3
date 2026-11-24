@@ -87,8 +87,8 @@ internal sealed class AudioStreamer : IDisposable
             _captureThread = new Thread(() => CaptureLoop(capture, ffmpeg)) { IsBackground = true, Name = "GameStream audio" };
             _captureThread.Start();
 
-            _log.LogInformation("Som do jogo ligado: captura só do processo {Pid} (WASAPI) -> AAC {Kbps} kbps, 48 kHz estéreo.",
-                processId, _bitrateKbps);
+            _log.LogInformation("Som do jogo ligado: captura só do processo {Pid} (WASAPI, modo \"{Mode}\") -> AAC {Kbps} kbps, 48 kHz estéreo.",
+                processId, capture.Mode, _bitrateKbps);
             return true;
         }
         catch (Exception ex)

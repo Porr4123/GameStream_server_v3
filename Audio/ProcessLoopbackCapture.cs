@@ -35,11 +35,107 @@ internal sealed class ProcessLoopbackCapture : IDisposable
     /// <summary>Pacotes que tinham som de verdade (não só zeros).</summary>
     public long LoudPackets => Interlocked.Read(ref _loud);
 
-    /// <summary>Abre a captura do processo. Lança exceção com a causa se o Windows recusar.</summary>
+    /// <summary>Abre a captura do processo. Lança exceção com a causa (todas as tentativas) se o Windows recusar.</summary>
     public void Open(int processId)
     {
         if (!IsSupported) throw new PlatformNotSupportedException("precisa do Windows 10 versão 2004 (build 19041) ou mais novo");
 
+        // Cada combinação de flags/duração é tentada num IAudioClient NOVO (um Initialize que falhou não é confiável de repetir).
+        // O dispositivo virtual de loopback por processo é exigente e varia entre versões do Windows.
+        const int L = AUDCLNT_STREAMFLAGS_LOOPBACK, E = AUDCLNT_STREAMFLAGS_EVENTCALLBACK, N = AUDCLNT_STREAMFLAGS_NOPERSIST,
+            C = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+        var attempts = new (string Name, int Flags, long Duration)[]
+        {
+            ("loopback+evento+nopersist", L | E | N, 200_000),
+            ("loopback+evento", L | E, 0),
+            ("loopback+evento+conversão", L | E | C, 0),
+            ("loopback+nopersist (sem evento)", L | N, 200_000),
+            ("loopback (sem evento)", L, 0),
+            ("loopback+conversão (sem evento)", L | C, 0),
+        };
+
+        var errors = new List<string>();
+        foreach (var (name, flags, duration) in attempts)
+        {
+            IAudioClient? client = null;
+            IntPtr fmt = IntPtr.Zero;
+            try
+            {
+                client = Activate(processId);
+
+                // PCM 16 bits, 48 kHz, estéreo (GetMixFormat não existe neste dispositivo virtual: o formato é escolhido aqui).
+                fmt = Marshal.AllocHGlobal(18);
+                Marshal.WriteInt16(fmt, 0, 1);                       // WAVE_FORMAT_PCM
+                Marshal.WriteInt16(fmt, 2, Channels);
+                Marshal.WriteInt32(fmt, 4, SampleRate);
+                Marshal.WriteInt32(fmt, 8, SampleRate * BytesPerFrame);
+                Marshal.WriteInt16(fmt, 12, BytesPerFrame);
+                Marshal.WriteInt16(fmt, 14, 16);
+                Marshal.WriteInt16(fmt, 16, 0);
+
+                int hr = client.Initialize(0, flags, duration, 0, fmt, IntPtr.Zero);
+                if (hr < 0)
+                {
+                    errors.Add($"{name}: 0x{hr:X8}");
+                    continue;
+                }
+
+                bool useEvent = (flags & E) != 0;
+                EventWaitHandle? ev = null;
+                if (useEvent)
+                {
+                    ev = new EventWaitHandle(false, EventResetMode.AutoReset);
+                    hr = client.SetEventHandle(ev.SafeWaitHandle.DangerousGetHandle());
+                    if (hr < 0)
+                    {
+                        ev.Dispose();
+                        errors.Add($"{name} (SetEventHandle): 0x{hr:X8}");
+                        continue;
+                    }
+                }
+
+                var capIid = IidCaptureClient;
+                hr = client.GetService(ref capIid, out object cap);
+                if (hr < 0)
+                {
+                    ev?.Dispose();
+                    errors.Add($"{name} (GetService): 0x{hr:X8}");
+                    continue;
+                }
+
+                hr = client.Start();
+                if (hr < 0)
+                {
+                    ev?.Dispose();
+                    errors.Add($"{name} (Start): 0x{hr:X8}");
+                    continue;
+                }
+
+                _client = client;
+                _capture = (IAudioCaptureClient)cap;
+                _event = ev;
+                _started = true;
+                Mode = name;
+                return;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{name}: {ex.GetType().Name} 0x{ex.HResult:X8}");
+            }
+            finally
+            {
+                if (fmt != IntPtr.Zero) Marshal.FreeHGlobal(fmt);
+            }
+        }
+
+        throw new InvalidOperationException("o Windows recusou todas as formas de abrir a captura: " + string.Join("; ", errors));
+    }
+
+    /// <summary>Combinação de flags que funcionou (para o log).</summary>
+    public string Mode { get; private set; } = "";
+
+    private static IAudioClient Activate(int processId)
+    {
         // AUDIOCLIENT_ACTIVATION_PARAMS { type = PROCESS_LOOPBACK(1); pid; mode = INCLUDE_TARGET_PROCESS_TREE(0) }
         IntPtr prm = Marshal.AllocHGlobal(12);
         IntPtr pv = Marshal.AllocHGlobal(24);
@@ -64,54 +160,20 @@ internal sealed class ProcessLoopbackCapture : IDisposable
             int hr = op.GetActivateResult(out int activateHr, out object? obj);
             if (hr < 0) Marshal.ThrowExceptionForHR(hr);
             if (activateHr < 0) Marshal.ThrowExceptionForHR(activateHr);
-            _client = (IAudioClient)obj!;
+            return (IAudioClient)obj!;
         }
         finally
         {
             Marshal.FreeHGlobal(pv);
             Marshal.FreeHGlobal(prm);
         }
-
-        // PCM 16 bits, 48 kHz, estéreo (GetMixFormat não existe neste dispositivo virtual: o formato é escolhido aqui).
-        IntPtr fmt = Marshal.AllocHGlobal(18);
-        try
-        {
-            Marshal.WriteInt16(fmt, 0, 1);                       // WAVE_FORMAT_PCM
-            Marshal.WriteInt16(fmt, 2, Channels);
-            Marshal.WriteInt32(fmt, 4, SampleRate);
-            Marshal.WriteInt32(fmt, 8, SampleRate * BytesPerFrame);
-            Marshal.WriteInt16(fmt, 12, BytesPerFrame);
-            Marshal.WriteInt16(fmt, 14, 16);
-            Marshal.WriteInt16(fmt, 16, 0);
-
-            int baseFlags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST;
-            int hr = _client!.Initialize(0, baseFlags | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                200_000, 0, fmt, IntPtr.Zero);
-            if (hr < 0)
-            {
-                // Algumas versões do Windows recusam os flags de conversão neste dispositivo: tenta só com o formato fixo.
-                hr = _client.Initialize(0, baseFlags, 200_000, 0, fmt, IntPtr.Zero);
-            }
-            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(fmt);
-        }
-
-        _event = new EventWaitHandle(false, EventResetMode.AutoReset);
-        Check(_client.SetEventHandle(_event.SafeWaitHandle.DangerousGetHandle()));
-        var capIid = IidCaptureClient;
-        Check(_client.GetService(ref capIid, out object cap));
-        _capture = (IAudioCaptureClient)cap;
-        Check(_client.Start());
-        _started = true;
     }
 
     /// <summary>Espera até <paramref name="timeoutMs"/> por áudio e devolve tudo o que estiver pronto (silêncio vira zeros).</summary>
     public int Read(Stream sink, int timeoutMs)
     {
-        _event!.WaitOne(timeoutMs);
+        if (_event != null) _event.WaitOne(timeoutMs);
+        else Thread.Sleep(Math.Min(timeoutMs, 5));
         int total = 0;
         while (true)
         {
