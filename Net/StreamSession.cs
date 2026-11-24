@@ -66,8 +66,8 @@ public sealed class StreamSession
         var ct = cts.Token;
 
         // Tamanho fixo da transmissão (par, exigência do H.264 yuv420p). 0 no game.json = 640x480.
-        int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 640) & ~1;
-        int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 480) & ~1;
+        int width = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 1280) & ~1;
+        int height = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 720) & ~1;
         int fps = Math.Clamp(_profile.Fps, 1, 60);
 
         // Fila de envio curta (~0,5 s): se o celular/Wi-Fi não acompanharem, descarta até o próximo keyframe
@@ -88,7 +88,7 @@ public sealed class StreamSession
             ? new SessionRecorder(diag.ResolveDir(_contentRoot), _sessionId, diag, _log)
             : null;
         using var debugPage = diag.Enabled && diag.DebugPage
-            ? DebugHub.Begin(BuildStatusText, () => probe.LatestFrame() is { } f ? (f, width, height) : null)
+            ? DebugHub.Begin(BuildStatusText, () => probe.Latest() is { } f ? (f.Bgra, f.W, f.H) : null)
             : null;
 
         _log.LogInformation("===== Sessão {Id}: jogo {Game}, cliente {Client} =====", _sessionId, _profile.Id,
@@ -127,7 +127,7 @@ public sealed class StreamSession
 
             videoTask = sender.RunVideoAsync(ct);
 
-            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe);
+            encoder = new FfmpegEncoder(_ffmpegPath, composer, _profile, fps, limits.ServerMask, _log, probe, width, height);
             encoderTask = encoder.RunAsync(sender.EnqueueVideo, ct);
 
             // Recebe desde já: sem isso, o ping do cliente ficava sem resposta enquanto o jogo abria.
@@ -264,7 +264,7 @@ public sealed class StreamSession
                 if (_gameShownWatch is { } w && frameTimes.Count > 0 && w.Elapsed.TotalSeconds >= frameTimes.Peek())
                 {
                     int sec = frameTimes.Dequeue();
-                    var path = recorder?.SaveFrame($"jogo+{sec}s", probe.LatestFrame(), width, height);
+                    var path = recorder?.SaveFrame($"jogo+{sec}s", probe.LatestFrame(), probe.Width, probe.Height);
                     if (path is not null) _log.LogInformation("Quadro salvo ({Sec} s depois do jogo abrir): {Path}", sec, path);
                 }
 
@@ -337,7 +337,9 @@ public sealed class StreamSession
                     ForegroundWindow = inp?.Foreground ?? "",
                     PrintWindowMode = MethodOf(_profile) == CaptureMethod.PrintWindow,
                     HideWindow = _profile.HideWindow,
-                    HideMode = _profile.HideMode
+                    HideMode = _profile.HideMode,
+                    TargetFps = Math.Clamp(_profile.Fps, 1, 60),
+                    FpsSent = fpsSent
                 };
 
                 var findings = Diagnosis.Evaluate(input);
@@ -356,7 +358,7 @@ public sealed class StreamSession
 
                     if (f.Code is "IMAGEM_PARADA" or "JANELA_TRAVADA" or "CAPTURA_FALHA")
                     {
-                        var path = recorder?.SaveFrame("problema-" + f.Code.ToLowerInvariant(), probe.LatestFrame(), width, height);
+                        var path = recorder?.SaveFrame("problema-" + f.Code.ToLowerInvariant(), probe.LatestFrame(), probe.Width, probe.Height);
                         if (path is not null)
                             _log.LogInformation("Quadro do momento do problema salvo em {Path}: abra para ver o que está sendo transmitido.", path);
                     }

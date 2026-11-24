@@ -42,6 +42,10 @@ internal sealed record DiagInput
     public bool PrintWindowMode { get; init; } = true;
     public bool HideWindow { get; init; } = true;
     public string HideMode { get; init; } = "";
+
+    /// <summary>Quadros por segundo pedidos (game.json) e os realmente enviados na última janela de medição.</summary>
+    public int TargetFps { get; init; }
+    public double FpsSent { get; init; }
 }
 
 /// <summary>
@@ -98,6 +102,19 @@ internal static class Diagnosis
             f.Add(new("CAPTURA_LENTA", FindingLevel.Warning,
                 $"Cada captura leva em média {i.AvgCaptureMs:0} ms (o orçamento é ~33 ms a 30 fps): o vídeo não chega a 30 quadros/s. " +
                 "O jogo está pesado ou a janela está tão grande que redimensionar custa caro."));
+
+        if (i.TargetFps > 0 && i.FpsSent > 0 && i.FpsSent < i.TargetFps * 0.8 && i.DroppedInWindow == 0)
+        {
+            double budget = 1000.0 / i.TargetFps;
+            string why = i.GameShown && i.AvgCaptureMs > budget * 0.7
+                ? $"O gargalo é a CAPTURA: cada quadro leva em média {i.AvgCaptureMs:0} ms e o orçamento a {i.TargetFps} fps é {budget:0} ms. " +
+                  "O PrintWindow/jogo não acompanha: baixe \"fps\" no game.json (ex.: 30), reduza a janela do jogo ou teste \"captureMode\": \"screen\"."
+                : "A captura é rápida, então o gargalo é a CODIFICAÇÃO/CPU: o x264 não consegue fechar " +
+                  $"{i.TargetFps} quadros/s. No game.json use \"preset\": \"ultrafast\", ou baixe \"fps\" (30), \"streamWidth\"/\"streamHeight\" " +
+                  "(ex.: 960x540) ou dê mais núcleos ao servidor (GameCores no appsettings.json).";
+            f.Add(new("FPS_BAIXO", FindingLevel.Warning,
+                $"O vídeo está saindo a {i.FpsSent:0} quadros/s, abaixo dos {i.TargetFps} pedidos. {why}"));
+        }
 
         if (i.FocusFailures > 0)
             f.Add(new("SEM_FOCO", FindingLevel.Error,

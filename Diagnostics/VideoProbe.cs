@@ -24,8 +24,7 @@ internal sealed class VideoProbe
 {
     private readonly object _lock = new();
     private readonly Func<TimeSpan> _clock;
-    private readonly int _width, _height;
-    private readonly int _step;
+    private int _width, _height;
 
     private bool _hasHash;
     private ulong _lastHash;
@@ -42,7 +41,6 @@ internal sealed class VideoProbe
     {
         _width = width;
         _height = height;
-        _step = width * height > 1_000_000 ? 4 : 2;
 
         if (clock is null)
         {
@@ -53,17 +51,31 @@ internal sealed class VideoProbe
         _lastChange = _clock();
     }
 
-    public int Width => _width;
-    public int Height => _height;
+    /// <summary>Tamanho do quadro mais recente (muda quando o jogo passa a ser mostrado no tamanho nativo).</summary>
+    public int Width { get { lock (_lock) return _width; } }
+    public int Height { get { lock (_lock) return _height; } }
 
-    /// <summary>Chamado uma vez por quadro, pela tarefa do codificador. Custa ~1 ms em 640x480.</summary>
-    public void Record(byte[] frame, TimeSpan captureTime)
+    /// <summary>Chamado uma vez por quadro, pela tarefa do codificador, com o último tamanho conhecido.</summary>
+    public void Record(byte[] frame, TimeSpan captureTime) => Record(frame, _width, _height, captureTime);
+
+    /// <summary>Chamado uma vez por quadro, pela tarefa do codificador.</summary>
+    public void Record(byte[] frame, int width, int height, TimeSpan captureTime)
     {
-        var stats = FrameInspector.Analyze(frame, _width, _height, _step);
+        // Em quadros grandes olha 1 pixel de cada 4 para o custo ficar em ~1 ms.
+        int step = (long)width * height > 1_000_000 ? 4 : 2;
+        var stats = FrameInspector.Analyze(frame, width, height, step);
         var now = _clock();
 
         lock (_lock)
         {
+            if (width != _width || height != _height)
+            {
+                _width = width;
+                _height = height;
+                _latest = null; // a cópia guardada era de outro tamanho
+                _hasHash = false;
+            }
+
             _frames++;
             _totalFrames++;
             _captureSum += captureTime.TotalMilliseconds;
@@ -81,8 +93,9 @@ internal sealed class VideoProbe
 
             if (_latest is null || now - _latestAt >= TimeSpan.FromMilliseconds(500))
             {
-                _latest ??= new byte[frame.Length];
-                Buffer.BlockCopy(frame, 0, _latest, 0, Math.Min(frame.Length, _latest.Length));
+                int bytes = width * height * 4;
+                _latest ??= new byte[bytes];
+                Buffer.BlockCopy(frame, 0, _latest, 0, Math.Min(Math.Min(frame.Length, bytes), _latest.Length));
                 _latestAt = now;
             }
         }
@@ -118,6 +131,12 @@ internal sealed class VideoProbe
     public void ResetStill()
     {
         lock (_lock) _lastChange = _clock();
+    }
+
+    /// <summary>Cópia do quadro mais recente com o tamanho dele (lidos juntos), ou null.</summary>
+    public (byte[] Bgra, int W, int H)? Latest()
+    {
+        lock (_lock) return _latest is null ? null : ((byte[])_latest.Clone(), _width, _height);
     }
 
     /// <summary>Cópia (BGRA) do quadro mais recente guardado, ou null se ainda não houve nenhum.</summary>

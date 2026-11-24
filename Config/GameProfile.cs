@@ -60,11 +60,36 @@ public sealed class GameProfile
     /// </summary>
     public string CaptureMode { get; set; } = "printwindow";
 
-    // Tamanho FIXO da transmissão (o jogo é encaixado nele, sem distorcer). 0 ou menos = 640 x 480.
-    public int StreamWidth { get; set; } = 640;
-    public int StreamHeight { get; set; } = 480;
-    public int Fps { get; set; } = 30;
-    public int BitrateKbps { get; set; } = 2000;
+    // Tamanho FIXO da transmissão (o jogo é encaixado nele, sem distorcer; sobra faixa preta se a proporção for diferente).
+    // 0 ou menos = 1280 x 720.
+    public int StreamWidth { get; set; } = 1280;
+    public int StreamHeight { get; set; } = 720;
+
+    /// <summary>Quadros por segundo desejados (1 a 60). Se o PC não acompanhar, o log mostra FPS_BAIXO com o motivo.</summary>
+    public int Fps { get; set; } = 60;
+
+    /// <summary>Taxa MÁXIMA de vídeo (kbps). Com crf &gt; 0 é só o teto (telas paradas gastam bem menos); com crf 0 é a taxa alvo.</summary>
+    public int BitrateKbps { get; set; } = 8000;
+
+    /// <summary>
+    /// Qualidade constante do x264: menor = mais nítido e mais pesado (18 muito bom, 21 padrão, 26 leve). 0 = usa só a taxa fixa.
+    /// </summary>
+    public int Crf { get; set; } = 21;
+
+    /// <summary>Velocidade do x264: ultrafast, superfast, veryfast (padrão), faster, fast, medium. Mais lento = mais qualidade e mais CPU.</summary>
+    public string Preset { get; set; } = "veryfast";
+
+    /// <summary>Perfil H.264: "main" (padrão), "high" (um pouco mais nítido) ou "baseline" (o mais compatível, usar se algum celular não decodificar).</summary>
+    public string H264Profile { get; set; } = "main";
+
+    /// <summary>
+    /// Como o ffmpeg ajusta o tamanho do jogo ao da transmissão: "bicubic" (padrão, suave), "lanczos" (mais nítido),
+    /// "bilinear" ou "neighbor" (pixel art: sem borrar, bordas duras).
+    /// </summary>
+    public string ScaleMode { get; set; } = "bicubic";
+
+    /// <summary>Threads do x264. 0 = automático (um por núcleo livre para o ffmpeg, até 4).</summary>
+    public int EncoderThreads { get; set; } = 0;
 
     /// <summary>
     /// Teclas usadas pelo layout padrão deste jogo (informativo, enviado ao cliente). O servidor NÃO usa esta lista para
