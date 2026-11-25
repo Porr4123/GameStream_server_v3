@@ -45,6 +45,7 @@ public sealed class StreamSession
     private long _audioFramesFinal;
     private int _currentFps = 30;
     private QualityController? _quality;
+    private string? _audioToken;
     private long _audioLoudFinal;
     private bool _audioEnabled;
 
@@ -184,6 +185,13 @@ public sealed class StreamSession
             _log.LogWarning("Som desligado: precisa do Windows 10 versão 2004 (build 19041) ou mais novo.");
         _audioSender = sender;
         if (_audioEnabled)
+        {
+            _audioToken = AudioLink.Register(sender);
+            sender.OnAudioSocketChanged = on => _log.LogInformation(on
+                ? "Som: agora vai por um soquete SEPARADO do vídeo."
+                : "Som: o soquete separado fechou; o som volta pelo soquete principal.");
+        }
+        if (_audioEnabled)
             _log.LogInformation("Som: modo {Mode}; jogo mudo no PC: {Mute}.",
                 string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) ? "CAPTURA POR PROCESSO (audioCaptureDevice vazio)" : $"DISPOSITIVO \"{_profile.AudioCaptureDevice}\"",
                 _profile.MuteGameOnServer && string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) ? "sim" : "não");
@@ -197,7 +205,10 @@ public sealed class StreamSession
             await sender.SendJsonAsync(new
             {
                 t = "hello", game = _profile.Id, w = width, h = height, fps,
-                audio = _audioEnabled ? new { codec = "aac", rate = ProcessLoopbackCapture.SampleRate, ch = ProcessLoopbackCapture.Channels } : null
+                audio = _audioEnabled ? new { codec = "aac", rate = ProcessLoopbackCapture.SampleRate, ch = ProcessLoopbackCapture.Channels } : null,
+                // O cliente pode abrir ws://host/audio?pin=..&token=.. para receber o som num soquete próprio.
+                // Se não abrir (cliente antigo), o som segue pelo soquete principal.
+                audioSocket = _audioEnabled ? new { path = "/audio", token = _audioToken } : null
             }, ct);
             _log.LogInformation("hello enviado ao cliente ({W}x{H} @ {Fps} fps)", width, height, fps);
 
@@ -243,6 +254,7 @@ public sealed class StreamSession
         finally
         {
             cts.Cancel();
+            if (_audioToken is not null) AudioLink.Remove(_audioToken);
 
             // 1º o jogo. Uma janela que parou de responder pode deixar a captura (PrintWindow) presa dentro do
             // compositor; ela só solta quando o jogo morre. Esperar o codificador antes de matar o jogo travava
