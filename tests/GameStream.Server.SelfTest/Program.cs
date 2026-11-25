@@ -1081,6 +1081,12 @@ async Task TestAudioAsync()
         Check(!AudioLink.TryGet(token, out _) && !AudioLink.TryGet("", out _) && !AudioLink.TryGet("naoexiste", out _), "token removido/ inválido não acha nada");
     }
 
+    // Janela maior que o limite é reduzida mantendo a proporção
+    Check(WindowHider.FitSize(784, 788, 1366, 768) is (764, 768), "janela 784x788 em monitor 1366x768 vira 764x768");
+    Check(WindowHider.FitSize(1280, 720, 1366, 768) is (1280, 720), "janela que cabe não muda");
+    Check(WindowHider.FitSize(1920, 1080, 1280, 720) is (1280, 720), "1920x1080 limitada a 1280x720");
+    Check(WindowHider.FitSize(800, 600, 0, 0) is (800, 600), "limite 0 = sem limite");
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);

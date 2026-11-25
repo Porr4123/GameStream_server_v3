@@ -528,7 +528,7 @@ public sealed class StreamSession
                 var mode = string.Equals(_profile.HideMode, "offscreen", StringComparison.OrdinalIgnoreCase)
                     ? HideMode.Offscreen
                     : HideMode.Transparent;
-                hider = new WindowHider(game.WindowHandle, mode);
+                hider = new WindowHider(game.WindowHandle, mode) { MaxWidth = _profile.MaxWindowWidth, MaxHeight = _profile.MaxWindowHeight };
                 hider.Hide();
                 _log.LogInformation("Janela do jogo escondida (hideMode={Mode}): {Desc}. Se a imagem congelar só quando escondida, " +
                                     "tente hideMode \"offscreen\" ou hideWindow=false.", mode, hider.Describe());

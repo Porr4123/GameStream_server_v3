@@ -40,6 +40,32 @@ internal sealed class WindowHider
 
     public HideMode Mode => _mode;
 
+    /// <summary>Tamanho máximo da janela em pixels (0 = o do monitor). Janela maior é reduzida mantendo a proporção: captura menos pixels e fica toda dentro da tela.</summary>
+    public int MaxWidth { get; set; }
+    public int MaxHeight { get; set; }
+
+    /// <summary>Reduz (w,h) para caber em (maxW,maxH) sem mudar a proporção. Nunca aumenta; tamanhos pares (o H.264 gosta).</summary>
+    public static (int W, int H) FitSize(int w, int h, int maxW, int maxH)
+    {
+        if (w <= 0 || h <= 0 || maxW <= 0 || maxH <= 0) return (w, h);
+        double k = Math.Min(1.0, Math.Min((double)maxW / w, (double)maxH / h));
+        if (k >= 1.0) return (w, h);
+        return (Math.Max(2, (int)(w * k) & ~1), Math.Max(2, (int)(h * k) & ~1));
+    }
+
+    /// <summary>Limite efetivo: o configurado, ou o monitor quando 0.</summary>
+    private (int W, int H) Limit()
+    {
+        int mw = MaxWidth, mh = MaxHeight;
+        if (TryMonitor(out var m))
+        {
+            int bw = m.rcMonitor.Right - m.rcMonitor.Left, bh = m.rcMonitor.Bottom - m.rcMonitor.Top;
+            mw = mw > 0 ? Math.Min(mw, bw) : bw;
+            mh = mh > 0 ? Math.Min(mh, bh) : bh;
+        }
+        return (mw, mh);
+    }
+
     /// <summary>Mensagens de aviso que o chamador deve escrever no log (ex.: janela maior que o monitor).</summary>
     public string? TakeWarning()
     {
@@ -159,6 +185,14 @@ internal sealed class WindowHider
         }
 
         var (mx, my) = MonitorOrigin();
+        var (lw, lh) = Limit();
+        var (fw, fh) = FitSize(w, h, lw, lh);
+        if (fw != w || fh != h)
+        {
+            _warning = $"A janela do jogo ({w}x{h}) passava do limite ({lw}x{lh}); reduzida para {fw}x{fh} (mesma proporção) para a captura ficar mais leve.";
+            w = fw; h = fh;
+            _warnedTooBig = true;
+        }
         Native.SetWindowPos(_hwnd, Native.HWND_BOTTOM, mx, my, w, h, Native.SWP_NOACTIVATE);
         CheckTooBig();
     }

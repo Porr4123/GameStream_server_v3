@@ -96,6 +96,10 @@ public sealed class GameProfile
     public int StreamWidth { get; set; } = 1280;
     public int StreamHeight { get; set; } = 720;
 
+    /// <summary>Tamanho máximo da JANELA do jogo no servidor (px). 0 = o do monitor. Janela maior é reduzida (mesma proporção): a captura (PrintWindow) custa por pixel da janela inteira, então janela menor = mais fps.</summary>
+    public int MaxWindowWidth { get; set; }
+    public int MaxWindowHeight { get; set; }
+
     /// <summary>Quadros por segundo desejados (1 a 60). Se o PC não acompanhar, o log mostra FPS_BAIXO com o motivo.</summary>
     public int Fps { get; set; } = 60;
 

@@ -329,3 +329,18 @@ Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jo
 Com som ligado, o `hello` traz `audioSocket: { path: "/audio", token }`. O cliente abre `ws://host:porta/audio?pin=...&token=...` e o som passa a ir por ele,
 sem esperar na fila do vídeo (um quadro de vídeo grande não atrasa mais o som). Cliente antigo, ou soquete que falhe/caia: o som segue (ou volta) pelo soquete principal automaticamente.
 O token é aleatório por sessão e o PIN continua obrigatório.
+
+## Captura lenta: limite de tamanho da janela
+
+O PrintWindow custa por pixel da janela INTEIRA do jogo. Se a janela é maior que o monitor (ex.: 784x788 num monitor 1366x768), a captura demora e o fps cai.
+Agora, no modo `transparent`, a janela é reduzida (mesma proporção) para caber no monitor, ou no limite que você definir no `game.json`:
+
+```json
+"maxWindowWidth": 1280,
+"maxWindowHeight": 720
+```
+
+`0` (padrão) = tamanho do monitor. Janela menor = captura mais rápida. O log avisa quando reduz.
+
+Dividir a imagem em 4 regiões com 4 capturas não acelera: cada PrintWindow renderiza a janela toda, então 4 capturas custariam 4x mais.
+A alternativa que realmente acelera é a Windows Graphics Capture (captura pela GPU, sem custo por janela); fica como próximo passo se o limite de tamanho não bastar.
