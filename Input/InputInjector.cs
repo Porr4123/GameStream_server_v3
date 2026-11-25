@@ -125,6 +125,15 @@ public sealed class InputInjector
             finally { if (attached) Native.AttachThreadInput(me, fgThread, false); }
         }
 
+        if (!GameIsForeground())
+        {
+            // Último recurso, ainda sem injetar tecla: restaura se estiver minimizada e usa SwitchToThisWindow (ignora o bloqueio de foreground).
+            if (Native.IsIconic(_hwnd)) Native.ShowWindowAsync(_hwnd, 9); // SW_RESTORE
+            Native.BringWindowToTop(_hwnd);
+            Native.SwitchToThisWindow(_hwnd, false);
+            Thread.Sleep(20);
+        }
+
         if (GameIsForeground())
         {
             try { _afterFocus?.Invoke(); } catch { /* ajuste de pilha de janelas nunca derruba a tecla */ }

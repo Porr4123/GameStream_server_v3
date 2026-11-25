@@ -295,3 +295,10 @@ Em vez da captura por processo, o servidor pode capturar **um dispositivo de rep
 4. No log: `Som do jogo ligado ... modo "dispositivo "Digital Audio (S/PDIF) ...", 48000 Hz ...`. Se o dispositivo não for achado ou estiver desconectado, o log lista todos os dispositivos e o estado de cada um.
 
 Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jogo nele. Com este modo ligado, `muteGameOnServer` não é usado.
+
+## Núcleos dinâmicos e uso em segundo plano
+
+- **Núcleos**: `GameCores` agora é `0` por padrão = **dinâmico**: o jogo recebe metade dos núcleos lógicos (mínimo 1, máximo 4), e o resto fica para o servidor, o x264 e o ffmpeg do som. Em um PC de 4 núcleos, 2 vão para o jogo. Um número maior que 0 fixa a quantidade (`"GameCores": 2`), e um jogo pode ter o seu em `"cores"` no `game.json`.
+- **Segundo plano**: ao iniciar, o servidor liga temporizador de 1 ms, desliga a redução de CPU do Windows para processos em segundo plano (EcoQoS) e zera o "bloqueio de foreground". Sem isso o vídeo caía para ~30 fps e o Windows recusava dar foco ao jogo (`SEM_FOCO`) quando a janela do servidor não estava na frente. A linha `Ajustes do servidor: ...` no console e no log diz o que o Windows aceitou. Se o bloqueio de foreground for recusado, deixe a janela do servidor na frente uma vez ao abrir.
+- O servidor continua sem injetar tecla fora do jogo: ao dar foco ele só usa chamadas de janela (`SetForegroundWindow`, `SwitchToThisWindow`).
+- No log de cada sessão aparece `Som: modo CAPTURA POR PROCESSO ...` ou `Som: modo DISPOSITIVO "..."`, para você ver qual dos dois está valendo.

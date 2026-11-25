@@ -571,7 +571,7 @@ void TestResourceLimits()
     Check(dyn.GameMask == 1UL && dyn.Cores == 1, "1 núcleo: o jogo fica só no núcleo 0 (máscara 0x1)");
     if (Environment.ProcessorCount > 1)
         Check((dyn.ServerMask & 1UL) == 0 && dyn.ServerMask != 0, "o ffmpeg/servidor ficam nos outros núcleos");
-    Check(new ServerOptions().GameCores == 1 && new ServerOptions().GameMemoryMb == 0, "padrões novos: 1 núcleo, RAM dinâmica");
+    Check(new ServerOptions().GameCores == 0 && new ServerOptions().GameMemoryMb == 0, "padrões novos: núcleos dinâmicos (0), RAM dinâmica");
 }
 
 void TestFrameInspector()
@@ -984,6 +984,9 @@ async Task TestAudioAsync()
         Check(parsed == new PcmFormat(48000, 2, 32, true) && parsed.FfmpegName == "f32le", "WAVEFORMATEXTENSIBLE float é lido como f32le 48000 Hz 2 canais");
     }
     finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(wf); }
+
+    Check(GameStream.Server.Sandbox.ResourceLimits.AutoCores(4) == 2 && GameStream.Server.Sandbox.ResourceLimits.AutoCores(2) == 1 &&
+          GameStream.Server.Sandbox.ResourceLimits.AutoCores(1) == 1 && GameStream.Server.Sandbox.ResourceLimits.AutoCores(16) == 4, "núcleos dinâmicos: 4->2, 2->1, 1->1, 16->4");
 
     var ws = new FakeWebSocket();
     var sender = new WsSender(ws);

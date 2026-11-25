@@ -136,6 +136,10 @@ public sealed class StreamSession
         if (_profile.Audio && !_audioEnabled)
             _log.LogWarning("Som desligado: precisa do Windows 10 versão 2004 (build 19041) ou mais novo.");
         _audioSender = sender;
+        if (_audioEnabled)
+            _log.LogInformation("Som: modo {Mode}; jogo mudo no PC: {Mute}.",
+                string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) ? "CAPTURA POR PROCESSO (audioCaptureDevice vazio)" : $"DISPOSITIVO \"{_profile.AudioCaptureDevice}\"",
+                _profile.MuteGameOnServer && string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) ? "sim" : "não");
 
         try
         {

@@ -192,7 +192,7 @@ Console.WriteLine("=== GameStream.Server ===");
 Console.WriteLine($"PIN de pareamento : {options.Pin}");
 Console.WriteLine($"Pasta dos jogos   : {gamesDir}");
 Console.WriteLine($"Jogos prontos     : {profiles.All.Count} ({string.Join(", ", profiles.All.Select(p => p.Id))})");
-Console.WriteLine($"Limites por jogo  : {options.GameCores} núcleo(s), " +
+Console.WriteLine($"Limites por jogo  : {(options.GameCores > 0 ? options.GameCores + " núcleo(s)" : $"núcleos dinâmicos ({GameStream.Server.Sandbox.ResourceLimits.AutoCores()} de {Environment.ProcessorCount})")}, " +
                   (options.GameMemoryMb > 0 ? $"{options.GameMemoryMb} MB fixos" : $"RAM dinâmica (livre na hora de abrir - {options.MemoryReserveMb} MB de reserva)"));
 Console.WriteLine($"Teste no navegador: http://localhost:{options.Port}/test.html");
 if (diagOptions.Enabled)
@@ -200,5 +200,9 @@ if (diagOptions.Enabled)
     if (diagOptions.DebugPage) Console.WriteLine($"Diagnóstico ao vivo: http://localhost:{options.Port}/debug  (veja o que está sendo transmitido)");
     Console.WriteLine($"Arquivos de log   : {(fileLog is not null ? fileLog.Path : diagDir)}");
 }
+
+var tuning = GameStream.Server.Interop.ProcessTuning.Apply();
+Console.WriteLine(tuning);
+app.Logger.LogInformation("{Tuning}", tuning);
 
 app.Run();

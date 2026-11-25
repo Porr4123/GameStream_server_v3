@@ -24,7 +24,7 @@ public sealed class ServerOptions
     public string LogoPath { get; set; } = "";
 
     /// <summary>Núcleos (lógicos) reservados para cada jogo. Padrão 1; o resto fica para servidor e ffmpeg.</summary>
-    public int GameCores { get; set; } = 1;
+    public int GameCores { get; set; } = 0;
 
     /// <summary>
     /// Limite de memória (MB) para todos os processos de um jogo.

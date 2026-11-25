@@ -112,6 +112,9 @@ internal static class Native
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool altTab);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int cmdShow);
     /// <summary>true se a janela não processa mensagens há alguns segundos (não bloqueia, ao contrário de PrintWindow).</summary>
     [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
