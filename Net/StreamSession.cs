@@ -499,6 +499,21 @@ public sealed class StreamSession
                 _profile.WindowTitle ?? "");
             var launchWatch = Stopwatch.StartNew();
 
+            // Jogos ignoram a escolha de dispositivo por aplicativo e tocam no padrão do Windows: troca o padrão ANTES de abrir o jogo.
+            if (_audioEnabled && _profile.RouteGameAudio && !string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice))
+            {
+                try
+                {
+                    _defaultDevice = DefaultRenderDevice.Apply(_profile.AudioCaptureDevice);
+                    _log.LogInformation("Som: o dispositivo de saída padrão do Windows agora é \"{Dev}\" (era \"{Prev}\"); volta ao normal quando a sessão acabar. " +
+                                        "Se o servidor fechar de repente, escolha o dispositivo de volta em Som > Reprodução.", _defaultDevice.DeviceName, _defaultDevice.PreviousName);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning("Som: não consegui trocar o dispositivo padrão ({Msg}). O jogo tocará no dispositivo atual.", ex.Message);
+                }
+            }
+
             var game = await GameLauncher.LaunchAsync(_profile, limits, ct);
             _game = game;
 
@@ -590,8 +605,12 @@ public sealed class StreamSession
         {
             _input?.ReleaseAll();
             _input = null;
+            _defaultDevice?.Dispose();
+            _defaultDevice = null;
         }
     }
+
+    private DefaultRenderDevice? _defaultDevice;
 
     private static CaptureMethod MethodOf(GameProfile p) =>
         p.CaptureMode.Equals("screen", StringComparison.OrdinalIgnoreCase) ||

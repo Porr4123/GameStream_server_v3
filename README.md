@@ -344,3 +344,10 @@ Agora, no modo `transparent`, a janela é reduzida (mesma proporção) para cabe
 
 Dividir a imagem em 4 regiões com 4 capturas não acelera: cada PrintWindow renderiza a janela toda, então 4 capturas custariam 4x mais.
 A alternativa que realmente acelera é a Windows Graphics Capture (captura pela GPU, sem custo por janela); fica como próximo passo se o limite de tamanho não bastar.
+
+## Jogo tocando no dispositivo errado (`routeGameAudio`)
+
+Muitos jogos ignoram a escolha de dispositivo por aplicativo do Windows e tocam sempre no dispositivo **padrão**. Por isso, com `audioCaptureDevice` definido
+(ex.: `"S/PDIF"`), o servidor agora troca o dispositivo de saída padrão do Windows para ele **antes de abrir o jogo** e devolve o anterior quando a sessão acaba
+(`"routeGameAudio": false` desliga). Enquanto a sessão dura, TODO o som do PC vai para esse dispositivo. Se o servidor fechar de repente, escolha o dispositivo
+de volta em Som > Reprodução. O log mostra `Som: o dispositivo de saída padrão do Windows agora é ...`.

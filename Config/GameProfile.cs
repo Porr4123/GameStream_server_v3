@@ -82,6 +82,9 @@ public sealed class GameProfile
     /// cujo nome contém esse texto. Aponte o jogo para esse dispositivo no Windows (Som > Volume do aplicativo e preferências
     /// de dispositivo) e o PC fica em silêncio enquanto o celular ouve. Só o jogo deve tocar nesse dispositivo.
     /// </summary>
+    /// <summary>Com audioCaptureDevice, troca o dispositivo de saída PADRÃO do Windows para ele enquanto o jogo roda (e devolve depois). Necessário porque muitos jogos ignoram a escolha por aplicativo e tocam no padrão.</summary>
+    public bool RouteGameAudio { get; set; } = true;
+
     public string AudioCaptureDevice { get; set; } = "";
 
     /// <summary>
