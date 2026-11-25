@@ -127,6 +127,16 @@ internal sealed class WsSender
         }
     }
 
+    private async Task FlushAudioAsync(CancellationToken ct)
+    {
+        while (_audio.Reader.TryRead(out var pending))
+        {
+            await SendAsync(pending, WebSocketMessageType.Binary, ct);
+            Interlocked.Increment(ref _audioSent);
+            Interlocked.Add(ref _audioBytes, pending.Length);
+        }
+    }
+
     public (long Frames, long Bytes) AudioTotals => (Interlocked.Read(ref _audioSent), Interlocked.Read(ref _audioBytes));
 
     /// <summary>Envia a fila de vídeo até a sessão acabar.</summary>
@@ -135,6 +145,10 @@ internal sealed class WsSender
         var sw = new Stopwatch();
         await foreach (var message in _video.Reader.ReadAllAsync(ct))
         {
+            // O som tem prioridade: o que já está na fila de áudio sai ANTES do próximo quadro de vídeo (no máximo um
+            // quadro de vídeo grande, ex.: keyframe de 8 Mbps, atrasa o som; ele nunca espera a fila de vídeo inteira).
+            await FlushAudioAsync(ct);
+
             sw.Restart();
             await SendAsync(message, WebSocketMessageType.Binary, ct);
             long ms = sw.ElapsedMilliseconds;

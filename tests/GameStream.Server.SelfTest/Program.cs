@@ -988,6 +988,43 @@ async Task TestAudioAsync()
     Check(GameStream.Server.Sandbox.ResourceLimits.AutoCores(4) == 2 && GameStream.Server.Sandbox.ResourceLimits.AutoCores(2) == 1 &&
           GameStream.Server.Sandbox.ResourceLimits.AutoCores(1) == 1 && GameStream.Server.Sandbox.ResourceLimits.AutoCores(16) == 4, "núcleos dinâmicos: 4->2, 2->1, 1->1, 16->4");
 
+    // Limite de tentativas de PIN
+    {
+        var clock = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var th = new AuthThrottle(() => clock);
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) Check(!th.Fail("1.2.3.4"), $"PIN errado {i + 1}: ainda não bloqueia");
+        Check(!th.IsLocked("1.2.3.4", out _), "antes do limite o endereço não está bloqueado");
+        Check(th.Fail("1.2.3.4") && th.IsLocked("1.2.3.4", out var wait) && wait > TimeSpan.FromSeconds(55), "5º erro bloqueia por ~1 min");
+        Check(!th.IsLocked("5.6.7.8", out _), "outro endereço não é afetado");
+        clock += TimeSpan.FromSeconds(61);
+        Check(!th.IsLocked("1.2.3.4", out _), "passado o tempo, o bloqueio acaba");
+        for (int i = 0; i < AuthThrottle.MaxFailures; i++) th.Fail("1.2.3.4");
+        Check(th.IsLocked("1.2.3.4", out var wait2) && wait2 > TimeSpan.FromSeconds(115), "o segundo bloqueio dura o dobro (~2 min)");
+        clock += TimeSpan.FromMinutes(3);
+        th.Success("1.2.3.4");
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) th.Fail("1.2.3.4");
+        Check(!th.IsLocked("1.2.3.4", out _), "acertar o PIN zera a conta");
+        clock += TimeSpan.FromMinutes(2);
+        th.Fail("9.9.9.9");
+        clock += TimeSpan.FromMinutes(2);
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) th.Fail("9.9.9.9");
+        Check(!th.IsLocked("9.9.9.9", out _), "erros espalhados por mais de 1 min não somam");
+    }
+
+    // Prioridade do som sobre o vídeo no envio
+    {
+        var wsPrio = new FakeWebSocket();
+        var senderPrio = new WsSender(wsPrio);
+        var key = new byte[] { 0, 0, 0, 1, 0x09, 0x10, 0, 0, 0, 1, 0x65, 1, 2, 3 }; // AUD + IDR
+        senderPrio.EnqueueVideo(key);
+        senderPrio.EnqueueAudio(new byte[] { 7 });
+        senderPrio.EnqueueAudio(new byte[] { 8 });
+        using var ctsPrio = new CancellationTokenSource(400);
+        try { await senderPrio.RunVideoAsync(ctsPrio.Token); } catch (OperationCanceledException) { }
+        var order = wsPrio.Sent.Where(m => m.Type == WebSocketMessageType.Binary).Select(m => (int)m.Data[0]).ToList();
+        Check(order.Count == 3 && order[0] == 2 && order[1] == 2 && order[2] == 1, $"o áudio pendente sai antes do vídeo (ordem: {string.Join(",", order)})");
+    }
+
     var ws = new FakeWebSocket();
     var sender = new WsSender(ws);
     sender.EnqueueAudio(new byte[] { 9, 8, 7 });

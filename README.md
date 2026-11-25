@@ -302,3 +302,9 @@ Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jo
 - **Segundo plano**: ao iniciar, o servidor liga temporizador de 1 ms, desliga a redução de CPU do Windows para processos em segundo plano (EcoQoS) e zera o "bloqueio de foreground". Sem isso o vídeo caía para ~30 fps e o Windows recusava dar foco ao jogo (`SEM_FOCO`) quando a janela do servidor não estava na frente. A linha `Ajustes do servidor: ...` no console e no log diz o que o Windows aceitou. Se o bloqueio de foreground for recusado, deixe a janela do servidor na frente uma vez ao abrir.
 - O servidor continua sem injetar tecla fora do jogo: ao dar foco ele só usa chamadas de janela (`SetForegroundWindow`, `SwitchToThisWindow`).
 - No log de cada sessão aparece `Som: modo CAPTURA POR PROCESSO ...` ou `Som: modo DISPOSITIVO "..."`, para você ver qual dos dois está valendo.
+
+## Segurança do PIN e prioridade do som
+
+- **Limite de tentativas**: 5 PINs errados em 1 minuto bloqueiam aquele endereço por 1 minuto (resposta `429`, com `Retry-After`); cada novo bloqueio dobra o tempo, até 15 min. Acertar o PIN zera a conta. O próprio PC (`localhost`) não é limitado. O log avisa `Muitos PINs errados vindos de ...`.
+- **O tráfego ainda é HTTP puro** (PIN na URL): use só em rede local confiável. TLS e token por dispositivo continuam pendentes.
+- **Som antes do vídeo**: no envio, o áudio pendente sai antes do próximo quadro de vídeo. Um keyframe grande atrasa o som no máximo um quadro, e não a fila inteira.

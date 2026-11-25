@@ -131,7 +131,11 @@ if (diagOptions.Enabled && diagOptions.DebugPage)
 // Lista de jogos e layouts padrão: GET /games?pin=123456  (relê as pastas: jogos novos aparecem sozinhos)
 app.MapGet("/games", (HttpContext ctx) =>
 {
-    if (!Auth.Check(ctx, options)) return Results.Unauthorized();
+    switch (Auth.Evaluate(ctx, options, app.Logger))
+    {
+        case AuthResult.Locked: return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+        case AuthResult.Denied: return Results.Unauthorized();
+    }
     profiles.Load();
     return Results.Ok(profiles.All.Select(p => new
     {
@@ -144,10 +148,13 @@ app.MapGet("/games", (HttpContext ctx) =>
 app.MapGet("/stream", async (HttpContext ctx) =>
 {
     if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
-    if (!Auth.Check(ctx, options))
+    var auth = Auth.Evaluate(ctx, options, app.Logger);
+    if (auth != AuthResult.Ok)
     {
-        app.Logger.LogWarning("Conexão de {Ip} recusada (401): PIN incorreto ou ausente.", ctx.Connection.RemoteIpAddress);
-        ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        app.Logger.LogWarning("Conexão de {Ip} recusada ({Code}): {Why}", ctx.Connection.RemoteIpAddress,
+            auth == AuthResult.Locked ? 429 : 401,
+            auth == AuthResult.Locked ? "endereço bloqueado por PINs errados em excesso." : "PIN incorreto ou ausente.");
+        ctx.Response.StatusCode = auth == AuthResult.Locked ? StatusCodes.Status429TooManyRequests : StatusCodes.Status401Unauthorized;
         return;
     }
 
