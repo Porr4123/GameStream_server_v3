@@ -323,3 +323,9 @@ Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jo
 - O tamanho do quadro **não muda** entre os modos: o decodificador do celular continua o mesmo. Só mudam fps e taxa; o ffmpeg reinicia por uns décimos de segundo a cada troca.
 - O log mostra `Modo de transmissão -> leve: ... Motivo: ...` a cada troca e o modo final no resumo. O servidor também manda `{"t":"quality","mode":"leve","fps":24,"kbps":2240}` ao cliente (informativo).
 - `"qualityMode": "pesado"` (ou outro fixo) desliga a adaptação.
+
+## Som em soquete separado
+
+Com som ligado, o `hello` traz `audioSocket: { path: "/audio", token }`. O cliente abre `ws://host:porta/audio?pin=...&token=...` e o som passa a ir por ele,
+sem esperar na fila do vídeo (um quadro de vídeo grande não atrasa mais o som). Cliente antigo, ou soquete que falhe/caia: o som segue (ou volta) pelo soquete principal automaticamente.
+O token é aleatório por sessão e o PIN continua obrigatório.

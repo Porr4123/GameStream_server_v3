@@ -38,6 +38,8 @@ internal sealed class WsSender
         SingleWriter = false
     });
     private long _audioSent, _audioBytes;
+    private volatile WebSocket? _audioWs;
+    private readonly SemaphoreSlim _audioLock = new(1, 1);
     private long _recentMaxSendMs, _sampledOverflows;
     private volatile int _softMax;
 
@@ -120,12 +122,56 @@ internal sealed class WsSender
         _audio.Writer.TryWrite(message);
     }
 
+    /// <summary>true enquanto o som vai por um soquete só dele (o vídeo não atrapalha).</summary>
+    public bool AudioOnSeparateSocket => _audioWs is { State: WebSocketState.Open };
+
+    /// <summary>Chamado quando o soquete de som liga (true) ou cai (false). O som volta ao soquete principal se o dele cair.</summary>
+    public Action<bool>? OnAudioSocketChanged { get; set; }
+
+    /// <summary>Passa o som para um soquete próprio. Quem chama continua dono dele (lê até fechar e chama <see cref="DetachAudioSocket"/>).</summary>
+    public void AttachAudioSocket(WebSocket ws)
+    {
+        _audioWs = ws;
+        OnAudioSocketChanged?.Invoke(true);
+    }
+
+    public void DetachAudioSocket(WebSocket ws)
+    {
+        if (!ReferenceEquals(_audioWs, ws)) return;
+        _audioWs = null;
+        OnAudioSocketChanged?.Invoke(false);
+    }
+
+    /// <summary>Som no soquete próprio se houver; senão (ou se ele falhar) no principal.</summary>
+    private async Task SendAudioMessageAsync(byte[] message, CancellationToken ct)
+    {
+        var aws = _audioWs;
+        if (aws is { State: WebSocketState.Open })
+        {
+            await _audioLock.WaitAsync(ct);
+            try
+            {
+                await aws.SendAsync(new ReadOnlyMemory<byte>(message), WebSocketMessageType.Binary, true, ct);
+                return;
+            }
+            catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)
+            {
+                DetachAudioSocket(aws); // caiu: este quadro e os próximos vão pelo principal
+            }
+            finally
+            {
+                _audioLock.Release();
+            }
+        }
+        await SendAsync(message, WebSocketMessageType.Binary, ct);
+    }
+
     /// <summary>Envia a fila de áudio até a sessão acabar.</summary>
     public async Task RunAudioAsync(CancellationToken ct)
     {
         await foreach (var message in _audio.Reader.ReadAllAsync(ct))
         {
-            await SendAsync(message, WebSocketMessageType.Binary, ct);
+            await SendAudioMessageAsync(message, ct);
             Interlocked.Increment(ref _audioSent);
             Interlocked.Add(ref _audioBytes, message.Length);
         }
@@ -133,6 +179,7 @@ internal sealed class WsSender
 
     private async Task FlushAudioAsync(CancellationToken ct)
     {
+        if (AudioOnSeparateSocket) return; // o som tem soquete próprio: não passa pela fila do vídeo
         while (_audio.Reader.TryRead(out var pending))
         {
             await SendAsync(pending, WebSocketMessageType.Binary, ct);

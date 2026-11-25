@@ -1052,6 +1052,35 @@ async Task TestAudioAsync()
         Check(order.Count == 3 && order[0] == 2 && order[1] == 2 && order[2] == 1, $"o áudio pendente sai antes do vídeo (ordem: {string.Join(",", order)})");
     }
 
+    // Som em soquete próprio: com o 2º soquete ligado, o som NÃO passa pelo principal; se ele cair, volta
+    {
+        var mainWs = new FakeWebSocket();
+        var audioWs = new FakeWebSocket();
+        var sp = new WsSender(mainWs);
+        var events = new List<bool>();
+        sp.OnAudioSocketChanged = events.Add;
+        sp.AttachAudioSocket(audioWs);
+        Check(sp.AudioOnSeparateSocket && events.SequenceEqual(new[] { true }), "soquete de som anexado");
+        sp.EnqueueAudio(new byte[] { 5 });
+        sp.EnqueueVideo(new byte[] { 0, 0, 0, 1, 0x09, 0x10, 0, 0, 0, 1, 0x65, 1, 2, 3 });
+        using var ctsA = new CancellationTokenSource(500);
+        var tAudio = sp.RunAudioAsync(ctsA.Token);
+        var tVideo = sp.RunVideoAsync(ctsA.Token);
+        try { await Task.WhenAll(tAudio, tVideo); } catch (OperationCanceledException) { }
+        Check(audioWs.Sent.Count == 1 && audioWs.Sent[0].Data.SequenceEqual(new byte[] { 2, 0, 5 }), "o som saiu pelo soquete de som");
+        Check(mainWs.Sent.Count == 1 && mainWs.Sent[0].Data[0] == 1, "o soquete principal só levou o vídeo");
+        sp.DetachAudioSocket(audioWs);
+        Check(!sp.AudioOnSeparateSocket && events.SequenceEqual(new[] { true, false }), "soquete de som solto: avisa");
+        sp.EnqueueAudio(new byte[] { 6 });
+        using var ctsB = new CancellationTokenSource(300);
+        try { await sp.RunAudioAsync(ctsB.Token); } catch (OperationCanceledException) { }
+        Check(mainWs.Sent.Any(m => m.Data.SequenceEqual(new byte[] { 2, 0, 6 })), "sem soquete próprio o som volta ao principal");
+        var token = AudioLink.Register(sp);
+        Check(AudioLink.TryGet(token, out var found) && ReferenceEquals(found, sp) && token.Length == 32, "token de som: 32 hex e acha a sessão");
+        AudioLink.Remove(token);
+        Check(!AudioLink.TryGet(token, out _) && !AudioLink.TryGet("", out _) && !AudioLink.TryGet("naoexiste", out _), "token removido/ inválido não acha nada");
+    }
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);

@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using System.Net;
 using System.Security.Cryptography;
 using GameStream.Server.Config;
@@ -142,6 +143,44 @@ app.MapGet("/games", (HttpContext ctx) =>
         p.Id, p.Name, p.StreamWidth, p.StreamHeight, p.Fps, p.AllowedKeys, p.Layout,
         SafeKeys = GameStream.Server.Input.KeyMap.Names
     }));
+});
+
+// Som em soquete próprio: /audio?pin=123456&token=<do hello>. O vídeo e o som não dividem mais a mesma fila TCP.
+app.MapGet("/audio", async (HttpContext ctx) =>
+{
+    if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+    var auth = Auth.Evaluate(ctx, options, app.Logger);
+    if (auth != AuthResult.Ok)
+    {
+        ctx.Response.StatusCode = auth == AuthResult.Locked ? StatusCodes.Status429TooManyRequests : StatusCodes.Status401Unauthorized;
+        return;
+    }
+    if (!AudioLink.TryGet(ctx.Request.Query["token"].ToString(), out var audioSender))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    using var audioWs = await ctx.WebSockets.AcceptWebSocketAsync();
+    audioSender.AttachAudioSocket(audioWs);
+    try
+    {
+        // Só lê para perceber quando o cliente fecha (o cliente não manda nada por aqui).
+        var sink = new byte[256];
+        while (audioWs.State == WebSocketState.Open && !ctx.RequestAborted.IsCancellationRequested)
+        {
+            var r = await audioWs.ReceiveAsync(sink, ctx.RequestAborted);
+            if (r.MessageType == WebSocketMessageType.Close) break;
+        }
+    }
+    catch (Exception ex) when (ex is WebSocketException or OperationCanceledException)
+    {
+        // caiu ou a sessão acabou
+    }
+    finally
+    {
+        audioSender.DetachAudioSocket(audioWs);
+    }
 });
 
 // Transmissão + comandos: WebSocket em /stream?game=<id>&pin=123456
