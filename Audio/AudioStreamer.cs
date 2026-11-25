@@ -157,13 +157,14 @@ internal sealed class AudioStreamer : IDisposable
                 }
                 input.Flush();
 
-                if (statLines < 6 && statWatch.Elapsed.TotalSeconds >= 5)
+                if (statLines < 12 && statWatch.Elapsed.TotalSeconds >= 5)
                 {
                     statWatch.Restart();
                     statLines++;
                     var (sentFrames, _) = _sender.AudioTotals;
-                    _log.LogInformation("Som (5 s): {Frames} quadros AAC gerados, {Sent} enviados, {Loud} pacotes com som do jogo, {Silence} KB de silêncio completado.",
-                        Frames, sentFrames, capture.LoudPackets, SilenceBytes / 1024);
+                    int peak = capture.TakePeak();
+                    _log.LogInformation("Som (5 s): {Frames} quadros AAC gerados, {Sent} enviados, {Loud} pacotes não-zero, pico do som do jogo {Peak}/32768{Hint}, {Silence} KB de silêncio completado.",
+                        Frames, sentFrames, capture.LoudPackets, peak, peak < 20 ? " (SILÊNCIO: o jogo não tocou nada ou a captura veio muda)" : "", SilenceBytes / 1024);
                 }
             }
         }

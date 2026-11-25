@@ -31,6 +31,10 @@ internal sealed class ProcessLoopbackCapture : IDisposable
     private EventWaitHandle? _event;
     private bool _started;
     private long _loud;
+    private int _peak;
+
+    /// <summary>Maior amplitude (0 a 32768) do som capturado desde a última chamada. 0 a ~5 = silêncio (ruído).</summary>
+    public int TakePeak() => Interlocked.Exchange(ref _peak, 0);
 
     /// <summary>Pacotes que tinham som de verdade (não só zeros).</summary>
     public long LoudPackets => Interlocked.Read(ref _loud);
@@ -186,6 +190,13 @@ internal sealed class ProcessLoopbackCapture : IDisposable
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && bytes > 0) Marshal.Copy(data, chunk, 0, bytes);
             _capture.ReleaseBuffer(got);
             if (bytes > 0 && chunk.AsSpan().IndexOfAnyExcept((byte)0) >= 0) Interlocked.Increment(ref _loud);
+            int peak = 0;
+            for (int i = 0; i + 1 < bytes; i += 2)
+            {
+                int v = Math.Abs((short)(chunk[i] | (chunk[i + 1] << 8)));
+                if (v > peak) peak = v;
+            }
+            if (peak > Volatile.Read(ref _peak)) Volatile.Write(ref _peak, peak);
 
             sink.Write(chunk, 0, bytes);
             total += bytes;

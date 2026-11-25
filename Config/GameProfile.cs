@@ -62,11 +62,11 @@ public sealed class GameProfile
     public int AudioBitrateKbps { get; set; } = 128;
 
     /// <summary>
-    /// true (padrão): com o som do celular ligado, o jogo fica MUDO nas caixas do PC do servidor (o celular continua ouvindo).
+    /// false (padrão): com true e o som do celular ligado, o jogo fica MUDO nas caixas do PC do servidor (o celular continua ouvindo).
     /// Só silencia o jogo e os processos filhos dele, e volta ao normal quando a sessão acaba.
-    /// Se o celular ficar sem som com isto ligado, ponha false.
+    /// Atenção: em testes reais a captura veio MUDA com isto ligado (pico ~2/32768), então o padrão é false.
     /// </summary>
-    public bool MuteGameOnServer { get; set; } = true;
+    public bool MuteGameOnServer { get; set; } = false;
 
     /// <summary>true (padrão por enquanto): ao ligar o som, toca um bipe curto no celular. Serve para separar "o caminho do som funciona" de "o jogo não está sendo capturado". Depois de testar, ponha false.</summary>
     public bool AudioBeep { get; set; } = true;
