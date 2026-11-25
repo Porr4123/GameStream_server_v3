@@ -43,6 +43,8 @@ public sealed class StreamSession
     private GameAudioMuter? _muter;
     private WsSender? _audioSender;
     private long _audioFramesFinal;
+    private int _currentFps = 30;
+    private QualityController? _quality;
     private long _audioLoudFinal;
     private bool _audioEnabled;
 
@@ -70,6 +72,40 @@ public sealed class StreamSession
         _contentRoot = contentRoot ?? AppContext.BaseDirectory;
     }
 
+    /// <summary>Uma vez por segundo olha a rede e, se preciso, troca o modo de transmissão (fps e taxa).</summary>
+    private async Task QualityLoopAsync(QualityController quality, FfmpegEncoder encoder, WsSender sender,
+        int profileFps, int baseKbps, CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                var next = quality.Update(sender.SampleNetwork(), out string reason);
+                if (next is null) continue;
+
+                var plan = QualityPlan.For(next.Value, profileFps, baseKbps);
+                _currentFps = plan.Fps;
+                sender.SetQueueLimit(Math.Max(4, plan.Fps / 2));
+                encoder.Reconfigure(plan.Fps, plan.BitrateKbps);
+                _log.LogInformation("Modo de transmissão -> {Mode}: {Fps} fps, {Kbps} kbps. Motivo: {Why}",
+                    QualityPlan.Name(next.Value), plan.Fps, plan.BitrateKbps, reason);
+                try
+                {
+                    await sender.SendJsonAsync(new { t = "quality", mode = QualityPlan.Name(next.Value), fps = plan.Fps, kbps = plan.BitrateKbps }, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // o aviso ao cliente é só informativo
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // sessão acabou
+        }
+    }
+
     public async Task RunAsync(WebSocket ws, CancellationToken requestAborted)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
@@ -83,6 +119,17 @@ public sealed class StreamSession
         var (width, height) = StreamGeometry.CanvasSize(profileWidth, profileHeight, _display.ScreenWidth, _display.ScreenHeight);
         int bitrateKbps = StreamGeometry.ScaleBitrate(_profile.BitrateKbps, profileWidth * profileHeight, width, height);
         int fps = Math.Clamp(_profile.Fps, 1, 60);
+
+        // Modo de transmissão: leve/médio/pesado (fixo) ou auto (começa no médio e muda sozinho com a rede).
+        int baseKbps = bitrateKbps;
+        var quality = QualityController.FromMode(_profile.QualityMode, Math.Max(4, fps / 4));
+        var plan = QualityPlan.For(quality.Level, fps, baseKbps);
+        fps = plan.Fps;
+        bitrateKbps = plan.BitrateKbps;
+        _currentFps = fps;
+        _log.LogInformation("Modo de transmissão: {Mode} ({Adapt}); {Fps} fps, {Kbps} kbps. Pesado = {PFps} fps, {PKbps} kbps.",
+            QualityPlan.Name(quality.Level), quality.IsAdaptive ? "automático: muda com a rede" : "fixo",
+            fps, bitrateKbps, Math.Clamp(_profile.Fps, 1, 60), baseKbps);
         _log.LogInformation("Quadro {W}x{H} (perfil {PW}x{PH}; tela do cliente {SW}x{SH}, ajuste {Fit}; teto {Kbps} kbps)",
             width, height, profileWidth, profileHeight, _display.ScreenWidth, _display.ScreenHeight, _display.Fit, bitrateKbps);
 
@@ -167,6 +214,9 @@ public sealed class StreamSession
             gameTask = RunGameAsync(composer, probe, limits, ct);
 
             statsTask = MonitorAsync(composer, sender, probe, recorder, width, height, ct);
+            _quality = quality;
+            sender.SetQueueLimit(Math.Max(4, fps / 2));
+            _ = QualityLoopAsync(quality, encoder, sender, Math.Clamp(_profile.Fps, 1, 60), baseKbps, ct);
 
             // Termina quando o cliente sai ou o codificador/envio para. O fim do jogo NÃO encerra a sessão.
             var finished = await Task.WhenAny(encoderTask, receiveTask, videoTask);
@@ -252,6 +302,8 @@ public sealed class StreamSession
             "{Client}",
             _sessionId, _sessionWatch.Elapsed, _endReason, t.FramesSent, t.BytesSent / 1024, t.KeyframesSent, t.FramesDropped,
             t.Overflows, vp.TotalChanges, vp.TotalFrames, _client);
+        if (_quality is { } qc)
+            _log.LogInformation("Modo de transmissão ao fim: {Mode} ({Changes} troca(s)).", QualityPlan.Name(qc.Level), qc.Changes);
         if (_audioEnabled)
         {
             var a = sender.AudioTotals;
@@ -383,7 +435,7 @@ public sealed class StreamSession
                     PrintWindowMode = MethodOf(_profile) == CaptureMethod.PrintWindow,
                     HideWindow = _profile.HideWindow,
                     HideMode = _profile.HideMode,
-                    TargetFps = Math.Clamp(_profile.Fps, 1, 60),
+                    TargetFps = _currentFps,
                     FpsSent = fpsSent
                 };
 

@@ -315,6 +315,33 @@ async Task TestQualityEncoderAsync()
     if (ffmpeg is null) { Console.WriteLine("  ffmpeg não encontrado: parte ignorada."); return; }
     var ffprobe = FindTool("ffprobe");
 
+    // ---- 0) Troca de modo ao vivo: 60 fps -> 24 fps com taxa menor. O vídeo continua e o fps cai de verdade ----
+    {
+        var wsQ = new FakeWebSocket();
+        var senderQ = new WsSender(wsQ, 120);
+        var srcQ = new SyntheticSource(640, 360);
+        var encQ = new FfmpegEncoder(ffmpeg, srcQ, new GameProfile(), 60, 0, null, null, 640, 360, 4000);
+        using var ctsQ = new CancellationTokenSource();
+        var vQ = senderQ.RunVideoAsync(ctsQ.Token);
+        var eQ = encQ.RunAsync(senderQ.EnqueueVideo, ctsQ.Token);
+        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        int before = wsQ.Sent.Count;
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        int fast = wsQ.Sent.Count - before;
+        encQ.Reconfigure(24, 1200);
+        await Task.Delay(TimeSpan.FromSeconds(1.5)); // reinício do ffmpeg
+        before = wsQ.Sent.Count;
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        int slow = wsQ.Sent.Count - before;
+        ctsQ.Cancel();
+        encQ.Dispose();
+        foreach (var t in new[] { eQ, vQ })
+            try { await t; } catch (OperationCanceledException) { }
+        Console.WriteLine($"  quadros em 2 s: {fast} a 60 fps -> {slow} depois de trocar para 24 fps");
+        Check(fast >= 2 * 40, $"antes da troca o vídeo flui (>= 40 quadros/s; veio {fast / 2})");
+        Check(slow >= 2 * 18 && slow <= 2 * 30, $"depois da troca o vídeo continua e sai ~24 quadros/s (veio {slow / 2})");
+    }
+
     // ---- 1) O jogo muda de tamanho no meio da sessão (espera 1280x720 -> jogo 816x624 -> jogo 640x480): a saída não muda ----
     const int fps = 60;
     var ws = new FakeWebSocket();
@@ -1023,6 +1050,40 @@ async Task TestAudioAsync()
         try { await senderPrio.RunVideoAsync(ctsPrio.Token); } catch (OperationCanceledException) { }
         var order = wsPrio.Sent.Where(m => m.Type == WebSocketMessageType.Binary).Select(m => (int)m.Data[0]).ToList();
         Check(order.Count == 3 && order[0] == 2 && order[1] == 2 && order[2] == 1, $"o áudio pendente sai antes do vídeo (ordem: {string.Join(",", order)})");
+    }
+
+    // Modos de transmissão
+    {
+        var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);
+        var mid = QualityPlan.For(QualityLevel.Medio, 60, 8000);
+        var light = QualityPlan.For(QualityLevel.Leve, 60, 8000);
+        Check(heavy.Fps == 60 && heavy.BitrateKbps == 8000, "pesado = fps e taxa do game.json");
+        Check(mid.Fps == 30 && mid.BitrateKbps == 4400, "médio = 30 fps, 55% da taxa");
+        Check(light.Fps == 24 && light.BitrateKbps == 2240, "leve = 24 fps, 28% da taxa");
+        Check(QualityPlan.For(QualityLevel.Pesado, 25, 1000).Fps == 25 && QualityPlan.For(QualityLevel.Leve, 20, 1000).Fps == 20, "nenhum modo passa do fps do perfil");
+
+        var good = new NetSample(0, 0, 5);
+        var bad = new NetSample(1, 9, 900);
+        var q = QualityController.FromMode("auto", 6);
+        Check(q.Level == QualityLevel.Medio && q.IsAdaptive, "auto começa no médio e é adaptativo");
+        for (int i = 0; i < 19; i++) q.Update(good, out _);
+        Check(q.Level == QualityLevel.Medio, "19 s bons ainda não sobem");
+        Check(q.Update(good, out _) == QualityLevel.Pesado, "20 s bons: sobe para pesado");
+        Check(q.Update(bad, out _) is null, "1 segundo ruim não desce (pode ser um soluço)");
+        Check(q.Update(bad, out var why) == QualityLevel.Medio && why.Length > 0, "2 segundos ruins: desce para médio, com motivo");
+        for (int i = 0; i < 25; i++) q.Update(good, out _);
+        Check(q.Level == QualityLevel.Medio, "depois de uma subida que falhou, espera mais (40 s) antes de subir de novo");
+        for (int i = 0; i < 20; i++) q.Update(good, out _);
+        Check(q.Level == QualityLevel.Pesado, "passado o tempo dobrado, sobe");
+        var q2 = QualityController.FromMode("leve", 6);
+        for (int i = 0; i < 60; i++) q2.Update(good, out _);
+        Check(q2.Level == QualityLevel.Leve && !q2.IsAdaptive, "modo fixo não muda mesmo com rede ótima");
+        var q3 = QualityController.FromMode("médio", 6);
+        for (int i = 0; i < 10; i++) q3.Update(bad, out _);
+        Check(q3.Level == QualityLevel.Medio, "modo fixo não muda mesmo com rede péssima");
+        var q4 = QualityController.FromMode("auto", 6);
+        for (int i = 0; i < 30; i++) q4.Update(bad, out _);
+        Check(q4.Level == QualityLevel.Leve, "rede péssima por 30 s: chega ao leve e para por aí");
     }
 
     var ws = new FakeWebSocket();

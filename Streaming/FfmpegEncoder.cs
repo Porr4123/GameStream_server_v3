@@ -24,12 +24,15 @@ internal sealed class FfmpegEncoder : IDisposable
     private readonly string _ffmpegPath;
     private readonly IFrameSource _source;
     private readonly GameProfile _profile;
-    private readonly int _fps;
+    private volatile int _fps;
     private readonly ulong _affinityMask;
     private readonly ILogger? _log;
     private readonly VideoProbe? _probe;
     private readonly int _outW, _outH;
-    private readonly int? _bitrateKbps;
+    private volatile int _bitrateKbpsValue;
+    private volatile bool _hasBitrate;
+    private volatile bool _reconfigure;
+    private string _restartReason = "o tamanho de entrada mudou";
     private readonly FitMode _fit;
     private Process? _process;
     private volatile bool _sizeChanged;
@@ -40,7 +43,8 @@ internal sealed class FfmpegEncoder : IDisposable
         ILogger? log = null, VideoProbe? probe = null, int outWidth = 0, int outHeight = 0,
         int? bitrateKbps = null, FitMode fit = FitMode.Fit)
     {
-        _bitrateKbps = bitrateKbps;
+        _hasBitrate = bitrateKbps.HasValue;
+        _bitrateKbpsValue = bitrateKbps ?? 0;
         _fit = fit;
         _probe = probe;
         _ffmpegPath = ffmpegPath;
@@ -53,13 +57,25 @@ internal sealed class FfmpegEncoder : IDisposable
         _outH = (outHeight > 0 ? outHeight : source.Height) & ~1;
     }
 
+    /// <summary>
+    /// Troca fps e taxa AO VIVO (modos de transmissão): o ffmpeg é reiniciado com os valores novos, o que leva uns décimos de
+    /// segundo e gera um keyframe. O tamanho do quadro não muda, então o decodificador do celular segue igual.
+    /// </summary>
+    public void Reconfigure(int fps, int bitrateKbps)
+    {
+        _fps = Math.Max(1, fps);
+        _bitrateKbpsValue = bitrateKbps;
+        _hasBitrate = true;
+        _reconfigure = true;
+    }
+
     /// <summary>Parâmetros efetivos (depois de validar o game.json).</summary>
     public EncoderSettings Settings =>
         EncoderSettings.From(_profile, _outW, _outH, _fps,
             _profile.EncoderThreads > 0 ? _profile.EncoderThreads : EncoderSettings.AutoThreads(_affinityMask)) with
         {
             Mode = _fit,
-            BitrateKbps = Math.Max(200, _bitrateKbps ?? _profile.BitrateKbps)
+            BitrateKbps = Math.Max(200, _hasBitrate ? _bitrateKbpsValue : _profile.BitrateKbps)
         };
 
     /// <summary>
@@ -68,6 +84,9 @@ internal sealed class FfmpegEncoder : IDisposable
     /// </summary>
     public async Task RunAsync(Action<byte[]> onAccessUnit, CancellationToken ct)
     {
+        while (!ct.IsCancellationRequested)
+        {
+        _reconfigure = false; // ANTES de ler as configurações: um pedido que chegue depois reinicia de novo
         var settings = Settings;
         _log?.LogInformation(
             "Codificação: saída {W}x{H} a {Fps} fps ({Fit}), x264 {Preset}, perfil {Profile}, {Rate}, ajuste de tamanho {Scale}, {Threads} thread(s), nível {Level}",
@@ -75,15 +94,14 @@ internal sealed class FfmpegEncoder : IDisposable
             settings.Crf > 0 ? $"CRF {settings.Crf} com teto de {settings.BitrateKbps} kbps" : $"{settings.BitrateKbps} kbps fixos",
             settings.ScaleFlags, settings.Threads, H264Level.For(settings.OutWidth, settings.OutHeight, settings.Fps));
 
-        while (!ct.IsCancellationRequested)
-        {
             // Lê o tamanho de entrada junto com o primeiro quadro, para os dois combinarem.
             var first = _source.NextFrame(out int inW, out int inH);
             _sizeChanged = false;
+            _restartReason = "o tamanho de entrada mudou";
 
             bool restart = await RunOnceAsync(first, inW, inH, settings, onAccessUnit, ct);
             if (!restart) break;
-            _log?.LogInformation("Tamanho de entrada mudou: reiniciando o ffmpeg (a saída continua {W}x{H}).", settings.OutWidth, settings.OutHeight);
+            _log?.LogInformation("Reiniciando o ffmpeg ({Why}; a saída continua {W}x{H}).", _restartReason, settings.OutWidth, settings.OutHeight);
         }
     }
 
@@ -184,6 +202,14 @@ internal sealed class FfmpegEncoder : IDisposable
 
             while (!ct.IsCancellationRequested)
             {
+                if (_reconfigure)
+                {
+                    _restartReason = "mudou o modo de transmissão (fps/taxa)";
+                    _sizeChanged = true;
+                    try { stdin.Close(); } catch { /* ignora */ }
+                    return;
+                }
+
                 var before = clock.Elapsed;
                 byte[] frame;
                 int w = inW, h = inH;

@@ -308,3 +308,18 @@ Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jo
 - **Limite de tentativas**: 5 PINs errados em 1 minuto bloqueiam aquele endereço por 1 minuto (resposta `429`, com `Retry-After`); cada novo bloqueio dobra o tempo, até 15 min. Acertar o PIN zera a conta. O próprio PC (`localhost`) não é limitado. O log avisa `Muitos PINs errados vindos de ...`.
 - **O tráfego ainda é HTTP puro** (PIN na URL): use só em rede local confiável. TLS e token por dispositivo continuam pendentes.
 - **Som antes do vídeo**: no envio, o áudio pendente sai antes do próximo quadro de vídeo. Um keyframe grande atrasa o som no máximo um quadro, e não a fila inteira.
+
+## Modos de transmissão (leve, médio, pesado)
+
+`"qualityMode"` no `game.json`: `"auto"` (padrão), `"leve"`, `"medio"` ou `"pesado"`.
+
+| Modo | fps | Taxa (kbps) |
+|---|---|---|
+| pesado | o do `game.json` (até 60) | a do `game.json` (`bitrateKbps`, ajustada ao tamanho do quadro) |
+| médio | até 30 | ~55% |
+| leve | até 24 | ~28% |
+
+- **auto**: começa no **médio**, **desce** para o modo mais leve depois de 2 segundos ruins nos últimos 4 (fila de envio cheia, quadros descartados ou envio demorando 300 ms ou mais) e **sobe** depois de 20 segundos seguidos bons. Se uma subida falha logo em seguida, a espera para a próxima dobra (até 2 min), para não ficar alternando.
+- O tamanho do quadro **não muda** entre os modos: o decodificador do celular continua o mesmo. Só mudam fps e taxa; o ffmpeg reinicia por uns décimos de segundo a cada troca.
+- O log mostra `Modo de transmissão -> leve: ... Motivo: ...` a cada troca e o modo final no resumo. O servidor também manda `{"t":"quality","mode":"leve","fps":24,"kbps":2240}` ao cliente (informativo).
+- `"qualityMode": "pesado"` (ou outro fixo) desliga a adaptação.

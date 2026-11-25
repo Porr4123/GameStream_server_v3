@@ -58,6 +58,12 @@ public sealed class GameProfile
     /// </summary>
     public bool Audio { get; set; } = true;
 
+    /// <summary>
+    /// Modo de transmissão: "auto" (padrão: começa no médio e muda sozinho conforme a rede), ou fixo "leve" / "medio" / "pesado".
+    /// Pesado = fps e taxa do game.json; médio = até 30 fps e ~55% da taxa; leve = até 24 fps e ~28% da taxa.
+    /// </summary>
+    public string QualityMode { get; set; } = "auto";
+
     /// <summary>Taxa do áudio AAC em kbps (32 a 320). 128 é um bom equilíbrio.</summary>
     public int AudioBitrateKbps { get; set; } = 128;
 

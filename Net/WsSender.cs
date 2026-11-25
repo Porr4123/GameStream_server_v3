@@ -38,6 +38,8 @@ internal sealed class WsSender
         SingleWriter = false
     });
     private long _audioSent, _audioBytes;
+    private long _recentMaxSendMs, _sampledOverflows;
+    private volatile int _softMax;
 
     private bool _waitKey = true; // só a thread do codificador mexe aqui
     private long _sent, _bytes, _dropped, _overflows, _maxSendMs, _keys;
@@ -51,6 +53,7 @@ internal sealed class WsSender
     {
         _ws = ws;
         _maxQueued = Math.Max(2, maxQueuedFrames);
+        _softMax = _maxQueued;
         _video = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(_maxQueued)
         {
             FullMode = BoundedChannelFullMode.Wait, // TryWrite devolve false quando cheia
@@ -84,7 +87,8 @@ internal sealed class WsSender
             _waitKey = false;
         }
 
-        if (!_video.Writer.TryWrite(BuildVideoMessage(accessUnit, key)))
+        // _softMax: com fps menor (modos médio/leve) a fila cheia teria mais de 1 s de atraso; o limite acompanha o fps.
+        if (_video.Reader.Count >= _softMax || !_video.Writer.TryWrite(BuildVideoMessage(accessUnit, key)))
         {
             // Fila cheia: a rede/o celular não acompanham. Esvazia e recomeça de um quadro que se decodifica sozinho.
             int flushed = 0;
@@ -169,7 +173,20 @@ internal sealed class WsSender
             long max;
             while (ms > (max = Interlocked.Read(ref _maxSendMs)) &&
                    Interlocked.CompareExchange(ref _maxSendMs, ms, max) != max) { }
+            while (ms > (max = Interlocked.Read(ref _recentMaxSendMs)) &&
+                   Interlocked.CompareExchange(ref _recentMaxSendMs, ms, max) != max) { }
         }
+    }
+
+    /// <summary>Quantos quadros podem esperar na fila (acompanha o fps do modo de transmissão atual).</summary>
+    public void SetQueueLimit(int frames) => _softMax = Math.Clamp(frames, 2, _maxQueued);
+
+    /// <summary>Medição do último intervalo para o controle de qualidade (independente de <see cref="TakeStats"/>).</summary>
+    public NetSample SampleNetwork()
+    {
+        long overflows = Interlocked.Read(ref _totOverflows);
+        long delta = overflows - Interlocked.Exchange(ref _sampledOverflows, overflows);
+        return new NetSample(delta, _video.Reader.Count, Interlocked.Exchange(ref _recentMaxSendMs, 0));
     }
 
     /// <summary>Lê e zera os contadores.</summary>
