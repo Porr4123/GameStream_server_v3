@@ -132,7 +132,7 @@ public sealed class StreamSession
         Task encoderTask = Task.CompletedTask, videoTask = Task.CompletedTask, receiveTask = Task.CompletedTask,
             gameTask = Task.CompletedTask, statsTask = Task.CompletedTask, audioTask = Task.CompletedTask;
 
-        _audioEnabled = _profile.Audio && ProcessLoopbackCapture.IsSupported;
+        _audioEnabled = _profile.Audio && (!string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) || ProcessLoopbackCapture.IsSupported);
         if (_profile.Audio && !_audioEnabled)
             _log.LogWarning("Som desligado: precisa do Windows 10 versão 2004 (build 19041) ou mais novo.");
         _audioSender = sender;
@@ -436,12 +436,12 @@ public sealed class StreamSession
 
             if (_audioEnabled && _audioSender is { } audioSender)
             {
-                var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct, _profile.AudioBeep);
+                var streamer = new AudioStreamer(_ffmpegPath, _profile.AudioBitrateKbps, (long)limits.ServerMask, audioSender, _log, ct, _profile.AudioBeep, _profile.AudioCaptureDevice);
                 if (streamer.TryStart(game.Process.Id))
                 {
                     _audioStreamer = streamer;
                     // Só cala o PC se o som de fato está indo para o celular: senão o jogo ficaria mudo em todo lugar.
-                    if (_profile.MuteGameOnServer && GameAudioMuter.IsSupported)
+                    if (_profile.MuteGameOnServer && string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice) && GameAudioMuter.IsSupported)
                     {
                         var muter = new GameAudioMuter(game.Process.Id, _log);
                         muter.Start();

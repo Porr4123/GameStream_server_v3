@@ -7,8 +7,10 @@ namespace GameStream.Server.Audio;
 /// (Windows 10 versão 2004 / build 19041 ou mais novo). Só o áudio do jogo entra: notificações, música e
 /// outros programas do PC NUNCA vão para o celular. Entrega PCM 16 bits, 48 kHz, estéreo.
 /// </summary>
-internal sealed class ProcessLoopbackCapture : IDisposable
+internal sealed class ProcessLoopbackCapture : IAudioCapture
 {
+    public PcmFormat Format => PcmFormat.S16Stereo48k;
+
     public const int SampleRate = 48000;
     public const int Channels = 2;
     public const int BytesPerFrame = Channels * 2;
@@ -190,12 +192,7 @@ internal sealed class ProcessLoopbackCapture : IDisposable
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && bytes > 0) Marshal.Copy(data, chunk, 0, bytes);
             _capture.ReleaseBuffer(got);
             if (bytes > 0 && chunk.AsSpan().IndexOfAnyExcept((byte)0) >= 0) Interlocked.Increment(ref _loud);
-            int peak = 0;
-            for (int i = 0; i + 1 < bytes; i += 2)
-            {
-                int v = Math.Abs((short)(chunk[i] | (chunk[i + 1] << 8)));
-                if (v > peak) peak = v;
-            }
+            int peak = Format.Peak(chunk, bytes);
             if (peak > Volatile.Read(ref _peak)) Volatile.Write(ref _peak, peak);
 
             sink.Write(chunk, 0, bytes);
@@ -255,30 +252,5 @@ internal sealed class ProcessLoopbackCapture : IDisposable
             Done.Set();
             return 0;
         }
-    }
-
-    [ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioClient
-    {
-        [PreserveSig] int Initialize(int shareMode, int streamFlags, long bufferDuration, long periodicity, IntPtr format, IntPtr sessionGuid);
-        [PreserveSig] int GetBufferSize(out uint bufferFrames);
-        [PreserveSig] int GetStreamLatency(out long latency);
-        [PreserveSig] int GetCurrentPadding(out uint padding);
-        [PreserveSig] int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closest);
-        [PreserveSig] int GetMixFormat(out IntPtr format);
-        [PreserveSig] int GetDevicePeriod(out long defaultPeriod, out long minimumPeriod);
-        [PreserveSig] int Start();
-        [PreserveSig] int Stop();
-        [PreserveSig] int Reset();
-        [PreserveSig] int SetEventHandle(IntPtr eventHandle);
-        [PreserveSig] int GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
-    }
-
-    [ComImport, Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioCaptureClient
-    {
-        [PreserveSig] int GetBuffer(out IntPtr data, out uint frames, out uint flags, out ulong devicePosition, out ulong qpcPosition);
-        [PreserveSig] int ReleaseBuffer(uint frames);
-        [PreserveSig] int GetNextPacketSize(out uint frames);
     }
 }

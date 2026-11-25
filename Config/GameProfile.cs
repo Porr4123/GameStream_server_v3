@@ -72,6 +72,13 @@ public sealed class GameProfile
     public bool AudioBeep { get; set; } = true;
 
     /// <summary>
+    /// Vazio (padrão): captura só o áudio do processo do jogo. Preenchido (ex.: "S/PDIF"): captura TODO o dispositivo de saída
+    /// cujo nome contém esse texto. Aponte o jogo para esse dispositivo no Windows (Som > Volume do aplicativo e preferências
+    /// de dispositivo) e o PC fica em silêncio enquanto o celular ouve. Só o jogo deve tocar nesse dispositivo.
+    /// </summary>
+    public string AudioCaptureDevice { get; set; } = "";
+
+    /// <summary>
     /// "printwindow" (padrão): captura só a área do jogo, mesmo com a janela escondida.
     /// "screen": copia da tela (a janela precisa estar visível e sem nada por cima; use hideWindow false).
     /// "gdigrab" continua aceito como outro nome de "screen".

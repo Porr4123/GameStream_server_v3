@@ -961,6 +961,30 @@ async Task TestAudioAsync()
     // AudioSpecificConfig usado pelo celular: AAC-LC (2), 48 kHz (índice 3), 2 canais = 0x11 0x90
     Check(((2 << 11) | (3 << 7) | (2 << 3)) == 0x1190, "AudioSpecificConfig 0x11 0x90 = AAC-LC 48 kHz estéreo");
 
+    // Formatos de captura de dispositivo: escrever uma amostra e medir o pico tem que concordar em todos os formatos
+    foreach (var f in new[] { new PcmFormat(48000, 2, 16, false), new PcmFormat(44100, 2, 24, false), new PcmFormat(48000, 2, 32, false), new PcmFormat(48000, 2, 32, true) })
+    {
+        var one = new byte[f.BytesPerFrame];
+        f.WriteSample(one, 0, 0.5);
+        int peak = f.Peak(one, one.Length);
+        Check(peak > 16000 && peak < 16500, $"{f}: amostra 0,5 mede pico ~16384 (veio {peak})");
+        Check(f.Peak(new byte[f.BytesPerFrame * 4], f.BytesPerFrame * 4) == 0, $"{f}: silêncio mede 0");
+    }
+    // WAVEFORMATEXTENSIBLE float 48 kHz estéreo (formato típico de mistura do Windows)
+    var wf = System.Runtime.InteropServices.Marshal.AllocHGlobal(40);
+    try
+    {
+        for (int i = 0; i < 40; i++) System.Runtime.InteropServices.Marshal.WriteByte(wf, i, 0);
+        System.Runtime.InteropServices.Marshal.WriteInt16(wf, 0, unchecked((short)0xFFFE));
+        System.Runtime.InteropServices.Marshal.WriteInt16(wf, 2, 2);
+        System.Runtime.InteropServices.Marshal.WriteInt32(wf, 4, 48000);
+        System.Runtime.InteropServices.Marshal.WriteInt16(wf, 14, 32);
+        System.Runtime.InteropServices.Marshal.WriteInt32(wf, 24, 3);
+        var parsed = PcmFormat.FromWaveFormat(wf);
+        Check(parsed == new PcmFormat(48000, 2, 32, true) && parsed.FfmpegName == "f32le", "WAVEFORMATEXTENSIBLE float é lido como f32le 48000 Hz 2 canais");
+    }
+    finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(wf); }
+
     var ws = new FakeWebSocket();
     var sender = new WsSender(ws);
     sender.EnqueueAudio(new byte[] { 9, 8, 7 });

@@ -284,3 +284,14 @@ Com o som do celular ligado, o jogo fica **mudo nas caixas do PC** (com `"muteGa
 - Só silencia se o som estiver de fato indo para o celular (`audio` ligado e captura funcionando).
 - No log: `Som do jogo silenciado no PC do servidor`. No resumo: `N pacotes com som de verdade`. Se for 0 com o jogo tocando, o Windows está calando a captura junto: ponha `"muteGameOnServer": false` no `game.json`.
 - Se o servidor travar e o jogo ficar mudo na próxima vez, tire o mudo do aplicativo no Mixer de volume do Windows.
+
+### Som por dispositivo de saída (`audioCaptureDevice`): jogo mudo no PC sem perder o som no celular
+
+Em vez da captura por processo, o servidor pode capturar **um dispositivo de reprodução inteiro** do Windows. O jogo é apontado para uma saída que ninguém ouve (por exemplo "Digital Audio (S/PDIF)" sem nada ligado); o PC fica em silêncio e o celular ouve o jogo. Não depende do mute do aplicativo.
+
+1. Em **Configurações > Sistema > Som > Volume do aplicativo e preferências de dispositivo**, escolha para o **jogo** (o `player.exe`, por exemplo) a saída "Digital Audio (S/PDIF)". Faça isso com o jogo aberto, ou feche e abra o jogo depois de trocar: alguns jogos só escolhem a saída ao iniciar.
+2. O dispositivo precisa estar **ativo** em Som > Reprodução (não "desativado" nem "desconectado"). O Windows só deixa capturar dispositivos ativos.
+3. No `game.json`: `"audioCaptureDevice": "S/PDIF"` (basta um pedaço do nome, sem diferenciar maiúsculas).
+4. No log: `Som do jogo ligado ... modo "dispositivo "Digital Audio (S/PDIF) ...", 48000 Hz ...`. Se o dispositivo não for achado ou estiver desconectado, o log lista todos os dispositivos e o estado de cada um.
+
+Atenção: TUDO o que tocar nesse dispositivo vai para o celular. Deixe só o jogo nele. Com este modo ligado, `muteGameOnServer` não é usado.

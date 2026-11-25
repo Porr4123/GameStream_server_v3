@@ -20,11 +20,13 @@ internal sealed class AudioStreamer : IDisposable
     private Thread? _captureThread;
     private Task? _readTask;
     private long _pcmBytes, _silenceBytes, _frames;
-    private ProcessLoopbackCapture? _cap;
+    private IAudioCapture? _cap;
+    private readonly string _captureDevice;
     private readonly bool _beep;
 
-    public AudioStreamer(string ffmpegPath, int bitrateKbps, long affinityMask, WsSender sender, ILogger log, CancellationToken ct, bool beep = true)
+    public AudioStreamer(string ffmpegPath, int bitrateKbps, long affinityMask, WsSender sender, ILogger log, CancellationToken ct, bool beep = true, string captureDevice = "")
     {
+        _captureDevice = captureDevice ?? "";
         _beep = beep;
         _ffmpegPath = ffmpegPath;
         _bitrateKbps = Math.Clamp(bitrateKbps, 32, 320);
@@ -43,7 +45,7 @@ internal sealed class AudioStreamer : IDisposable
     /// <summary>Liga o som do processo <paramref name="processId"/>. Devolve false (e registra o motivo) se não deu.</summary>
     public bool TryStart(int processId)
     {
-        var capture = new ProcessLoopbackCapture();
+        IAudioCapture capture = string.IsNullOrWhiteSpace(_captureDevice) ? new ProcessLoopbackCapture() : new DeviceLoopbackCapture(_captureDevice);
         try
         {
             capture.Open(processId);
@@ -61,7 +63,7 @@ internal sealed class AudioStreamer : IDisposable
             {
                 "-hide_banner", "-loglevel", "warning", "-fflags", "nobuffer", "-flags", "low_delay",
                 "-probesize", "32", "-analyzeduration", "0",
-                "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+                "-f", capture.Format.FfmpegName, "-ar", capture.Format.Rate.ToString(), "-ac", capture.Format.Channels.ToString(), "-i", "pipe:0",
                 "-c:a", "aac", "-profile:a", "aac_low", "-b:a", _bitrateKbps + "k", "-ar", "48000", "-ac", "2",
                 "-flush_packets", "1", "-f", "adts", "pipe:1"
             }) psi.ArgumentList.Add(a);
@@ -100,8 +102,9 @@ internal sealed class AudioStreamer : IDisposable
         }
     }
 
-    private void CaptureLoop(ProcessLoopbackCapture capture, Process ffmpeg)
+    private void CaptureLoop(IAudioCapture capture, Process ffmpeg)
     {
+        var fmt = capture.Format;
         try
         {
             var input = ffmpeg.StandardInput.BaseStream;
@@ -112,15 +115,14 @@ internal sealed class AudioStreamer : IDisposable
             // qualquer mudez vem da captura do jogo. Se não apitar, o problema está no envio ou no app.
             if (_beep)
             {
-                int beepFrames = ProcessLoopbackCapture.SampleRate * 4 / 10;
-                var beep = new byte[beepFrames * ProcessLoopbackCapture.BytesPerFrame];
+                int beepFrames = fmt.Rate * 4 / 10;
+                var beep = new byte[beepFrames * fmt.BytesPerFrame];
                 for (int i = 0; i < beepFrames; i++)
                 {
                     double fade = Math.Min(1.0, Math.Min(i, beepFrames - i) / 2400.0);
-                    short v = (short)(Math.Sin(2 * Math.PI * 440 * i / ProcessLoopbackCapture.SampleRate) * 9000 * fade);
-                    int o = i * ProcessLoopbackCapture.BytesPerFrame;
-                    beep[o] = beep[o + 2] = (byte)(v & 0xFF);
-                    beep[o + 1] = beep[o + 3] = (byte)((v >> 8) & 0xFF);
+                    double v = Math.Sin(2 * Math.PI * 440 * i / fmt.Rate) * 0.275 * fade;
+                    for (int c = 0; c < fmt.Channels; c++)
+                        fmt.WriteSample(beep, i * fmt.BytesPerFrame + c * fmt.BytesPerSample, v);
                 }
                 input.Write(beep, 0, beep.Length);
                 framesWritten += beepFrames;
@@ -134,22 +136,22 @@ internal sealed class AudioStreamer : IDisposable
             while (!_cts.IsCancellationRequested)
             {
                 int bytes = capture.Read(input, 10);
-                framesWritten += bytes / ProcessLoopbackCapture.BytesPerFrame;
+                framesWritten += bytes / fmt.BytesPerFrame;
                 Interlocked.Add(ref _pcmBytes, bytes);
 
                 // Sem nada tocando o WASAPI não entrega pacotes. O ffmpeg e o celular esperam um fluxo contínuo,
                 // então completa com silêncio para manter o relógio do som igual ao do relógio real.
-                long expected = (long)(clock.Elapsed.TotalSeconds * ProcessLoopbackCapture.SampleRate);
+                long expected = (long)(clock.Elapsed.TotalSeconds * fmt.Rate);
                 long missing = expected - framesWritten;
-                if (missing > ProcessLoopbackCapture.SampleRate / 50) // mais de 20 ms atrasado
+                if (missing > fmt.Rate / 50) // mais de 20 ms atrasado
                 {
-                    missing = Math.Min(missing, ProcessLoopbackCapture.SampleRate / 5);
-                    var zeros = new byte[missing * ProcessLoopbackCapture.BytesPerFrame];
+                    missing = Math.Min(missing, fmt.Rate / 5);
+                    var zeros = new byte[missing * fmt.BytesPerFrame];
                     input.Write(zeros, 0, zeros.Length);
                     framesWritten += missing;
                     Interlocked.Add(ref _silenceBytes, zeros.Length);
                 }
-                else if (missing < -ProcessLoopbackCapture.SampleRate / 2)
+                else if (missing < -fmt.Rate / 2)
                 {
                     // O dispositivo entregou rajadas à frente do relógio: reajusta para o atraso não crescer.
                     clock.Restart();
