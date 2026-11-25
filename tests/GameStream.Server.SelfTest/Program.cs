@@ -1087,6 +1087,20 @@ async Task TestAudioAsync()
     Check(WindowHider.FitSize(1920, 1080, 1280, 720) is (1280, 720), "1920x1080 limitada a 1280x720");
     Check(WindowHider.FitSize(800, 600, 0, 0) is (800, 600), "limite 0 = sem limite");
 
+    // Som exclusivo: confirma com 3 s de som acumulado; desiste no tempo limite
+    {
+        var g = new GameAudioGate(3000, 10000);
+        Check(g.Update(0, 0) == GateState.Waiting && g.Update(0, 1000) == GateState.Waiting, "porta: sem som, espera");
+        Check(g.Update(5, 1100) == GateState.Waiting && g.Update(10, 2100) == GateState.Waiting, "porta: 2 s de som ainda espera");
+        Check(g.Update(15, 3200) == GateState.Waiting && g.Update(20, 4200) == GateState.Confirmed, "porta: passou de 3 s de som acumulado: confirmado");
+        var t = new GameAudioGate(3000, 10000);
+        t.Update(0, 0);
+        Check(t.Update(0, 9900) == GateState.Waiting && t.Update(0, 10000) == GateState.TimedOut, "porta: sem som até o limite = tempo esgotado");
+        var s2 = new GameAudioGate(3000, 10000);
+        s2.Update(0, 0); s2.Update(1, 500); s2.Update(1, 1500); s2.Update(1, 2500);
+        Check(s2.LoudMs == 500, "porta: som parado não acumula tempo");
+    }
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);

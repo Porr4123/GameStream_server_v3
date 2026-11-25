@@ -351,3 +351,13 @@ Muitos jogos ignoram a escolha de dispositivo por aplicativo do Windows e tocam 
 (ex.: `"S/PDIF"`), o servidor agora troca o dispositivo de saída padrão do Windows para ele **antes de abrir o jogo** e devolve o anterior quando a sessão acaba
 (`"routeGameAudio": false` desliga). Enquanto a sessão dura, TODO o som do PC vai para esse dispositivo. Se o servidor fechar de repente, escolha o dispositivo
 de volta em Som > Reprodução. O log mostra `Som: o dispositivo de saída padrão do Windows agora é ...`.
+
+## Som exclusivo (`exclusiveAudio`, padrão ligado com `audioCaptureDevice`)
+
+1. Antes de abrir o jogo, o servidor **desativa todos os outros dispositivos de saída** (só fica o do `audioCaptureDevice`; exige executar como **administrador**) e espera 3 s.
+2. Abre o jogo. Quando ele gera **3 s de som** no dispositivo certo, os dispositivos voltam ao normal (o log diz `Som confirmado`).
+3. Se o jogo não gerar som em `audioStartTimeoutSec` (padrão 60 s), tocar no dispositivo errado, ou fechar antes de tocar, o servidor **fecha o jogo**, devolve os dispositivos e mostra a mensagem de erro no celular.
+4. Se não for possível desativar os dispositivos (sem administrador), o jogo nem abre e o erro aparece no celular.
+5. Rede de segurança: os dispositivos desativados ficam anotados em `dispositivos-escondidos.json`; se o servidor fechar de repente, na próxima partida eles são devolvidos.
+
+`"exclusiveAudio": false` desliga tudo isso (sobra só a troca do dispositivo padrão, `routeGameAudio`).

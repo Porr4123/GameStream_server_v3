@@ -43,6 +43,13 @@ internal sealed class DefaultRenderDevice : IDisposable
         return result;
     }
 
+    /// <summary>Mostra (true) ou esconde/desativa (false) um dispositivo de saída para TODO o Windows. Normalmente exige administrador.</summary>
+    public static int SetVisibility(string deviceId, bool visible)
+    {
+        var policy = (IPolicyConfig)Activator.CreateInstance(Type.GetTypeFromCLSID(ClsidPolicyConfig)!)!;
+        return policy.SetEndpointVisibility(deviceId, visible ? 1 : 0);
+    }
+
     /// <summary>Devolve o dispositivo padrão que era usado antes.</summary>
     public void Dispose()
     {
@@ -61,7 +68,7 @@ internal sealed class DefaultRenderDevice : IDisposable
 
     // Ordem dos métodos da vtable da IPolicyConfig (Windows Vista em diante). Só SetDefaultEndpoint é usado.
     [ComImport, Guid("F8679F50-850A-41CF-9C72-430F290290C8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPolicyConfig
+    internal interface IPolicyConfig
     {
         [PreserveSig] int GetMixFormat(IntPtr deviceId, IntPtr format);
         [PreserveSig] int GetDeviceFormat(IntPtr deviceId, int def, IntPtr format);

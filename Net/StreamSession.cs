@@ -514,6 +514,25 @@ public sealed class StreamSession
                 }
             }
 
+            // Modo exclusivo: só o dispositivo escolhido fica ativo até o jogo provar que toca nele.
+            bool exclusive = _audioEnabled && _profile.ExclusiveAudio && !string.IsNullOrWhiteSpace(_profile.AudioCaptureDevice);
+            if (exclusive)
+            {
+                try
+                {
+                    _exclusive = ExclusiveDevices.Hide(_profile.AudioCaptureDevice);
+                    _log.LogInformation("Som exclusivo: dispositivos desativados até o jogo tocar: {Names}. Aguardando 3 s antes de abrir o jogo.",
+                        string.Join(", ", _exclusive.HiddenNames.Select(n => $"\"{n}\"")));
+                    composer.ShowStatus("Preparando o som...");
+                    await Task.Delay(3000, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    await FailAudioAsync($"Não foi possível preparar o som do jogo: {ex.Message}", composer, null);
+                    return;
+                }
+            }
+
             var game = await GameLauncher.LaunchAsync(_profile, limits, ct);
             _game = game;
 
@@ -532,6 +551,7 @@ public sealed class StreamSession
                     }
                 }
             }
+            if (exclusive) _ = WatchGameAudioAsync(game, composer, ct);
             _log.LogInformation("A janela do jogo apareceu após {Ms} ms: {Desc}", launchWatch.ElapsedMilliseconds,
                 GameProbe.Describe(game));
 
@@ -588,7 +608,7 @@ public sealed class StreamSession
                 Interlocked.Exchange(ref _muter, null)?.Dispose();
                 Interlocked.Exchange(ref _game, null)?.Dispose();
                 _audioStreamer?.Dispose();
-                composer.ShowStatus("Jogo encerrado.");
+                composer.ShowStatus(_fatalMessage ?? "Jogo encerrado.");
             }
         }
         catch (OperationCanceledException)
@@ -605,12 +625,74 @@ public sealed class StreamSession
         {
             _input?.ReleaseAll();
             _input = null;
-            _defaultDevice?.Dispose();
-            _defaultDevice = null;
+            RestoreAudioDevices();
         }
     }
 
     private DefaultRenderDevice? _defaultDevice;
+    private ExclusiveDevices? _exclusive;
+    private volatile string? _fatalMessage;
+
+    private void RestoreAudioDevices()
+    {
+        Interlocked.Exchange(ref _exclusive, null)?.Dispose();
+        _defaultDevice?.Dispose();
+        _defaultDevice = null;
+    }
+
+    /// <summary>Espera o jogo tocar 3 s no dispositivo certo; se não tocar, fecha o jogo e avisa o cliente.</summary>
+    private async Task WatchGameAudioAsync(LaunchedGame game, FrameComposer composer, CancellationToken ct)
+    {
+        var gate = new GameAudioGate(confirmMs: 3000, timeoutMs: Math.Max(5, _profile.AudioStartTimeoutSec) * 1000);
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                long loud = _audioStreamer?.LoudPackets ?? 0;
+                var state = gate.Update(loud, watch.ElapsedMilliseconds);
+                if (state == GateState.Confirmed)
+                {
+                    RestoreAudioDevices();
+                    _log.LogInformation("Som confirmado: o jogo tocou {Sec:0.0} s no dispositivo \"{Dev}\". Os outros dispositivos de saída voltaram ao normal.",
+                        gate.LoudMs / 1000.0, _profile.AudioCaptureDevice);
+                    return;
+                }
+                bool exited = false;
+                try { exited = game.Process.HasExited; } catch { /* ignora */ }
+                if (exited || state == GateState.TimedOut)
+                {
+                    string why = exited
+                        ? "O jogo fechou antes de gerar som."
+                        : $"O jogo não gerou som no dispositivo \"{_profile.AudioCaptureDevice}\" em {_profile.AudioStartTimeoutSec} s (sem som, ou tocando no dispositivo errado).";
+                    await FailAudioAsync(why, composer, game);
+                    return;
+                }
+                await Task.Delay(100, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // sessão acabou; o finally devolve os dispositivos
+        }
+    }
+
+    /// <summary>Falha de som no modo exclusivo: devolve os dispositivos, fecha o jogo e mostra o erro no celular.</summary>
+    private async Task FailAudioAsync(string message, FrameComposer composer, LaunchedGame? game)
+    {
+        _fatalMessage = message;
+        _log.LogError("Som exclusivo falhou: {Msg} O jogo será fechado.", message);
+        RestoreAudioDevices();
+        _gameState = (int)GameState.Exited;
+        Interlocked.Exchange(ref _game, null)?.Dispose();
+        if (game is not null && !ReferenceEquals(game, _game)) { try { game.Dispose(); } catch { /* ignora */ } }
+        composer.ShowStatus(message);
+        try
+        {
+            if (_audioSender is { } s) await s.SendJsonAsync(new { t = "error", msg = message }, CancellationToken.None);
+        }
+        catch { /* cliente já saiu */ }
+    }
 
     private static CaptureMethod MethodOf(GameProfile p) =>
         p.CaptureMode.Equals("screen", StringComparison.OrdinalIgnoreCase) ||

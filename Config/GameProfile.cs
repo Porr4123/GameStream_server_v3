@@ -85,6 +85,15 @@ public sealed class GameProfile
     /// <summary>Com audioCaptureDevice, troca o dispositivo de saída PADRÃO do Windows para ele enquanto o jogo roda (e devolve depois). Necessário porque muitos jogos ignoram a escolha por aplicativo e tocam no padrão.</summary>
     public bool RouteGameAudio { get; set; } = true;
 
+    /// <summary>
+    /// Com audioCaptureDevice: antes de abrir o jogo, desativa os OUTROS dispositivos de saída (exige administrador), espera 3 s e abre o jogo.
+    /// Quando o jogo gera 3 s de som no dispositivo certo, os dispositivos voltam. Se não gerar som (ou o jogo fechar antes), o jogo é fechado com uma mensagem de erro.
+    /// </summary>
+    public bool ExclusiveAudio { get; set; } = true;
+
+    /// <summary>Segundos esperando o jogo tocar (depois de aberto) antes de dar erro.</summary>
+    public int AudioStartTimeoutSec { get; set; } = 60;
+
     public string AudioCaptureDevice { get; set; } = "";
 
     /// <summary>

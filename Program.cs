@@ -247,6 +247,7 @@ if (diagOptions.Enabled)
     Console.WriteLine($"Arquivos de log   : {(fileLog is not null ? fileLog.Path : diagDir)}");
 }
 
+GameStream.Server.Audio.ExclusiveDevices.RecoverPending(app.Logger);
 var tuning = GameStream.Server.Interop.ProcessTuning.Apply();
 Console.WriteLine(tuning);
 app.Logger.LogInformation("{Tuning}", tuning);
