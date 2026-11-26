@@ -85,7 +85,7 @@ app.Logger.LogInformation("Ambiente: {Os}, .NET {Net}, {Cpus} núcleo(s) lógico
 
 var gamesDir = options.ResolveGamesDir();
 GameFolderSkeleton.EnsureRoot(gamesDir);
-var profiles = new ProfileStore(gamesDir);
+var profiles = new ProfileStore(gamesDir) { Log = m => app.Logger.LogWarning("{Msg}", m) };
 profiles.Load();
 
 // Aviso se o limite de RAM por jogo não cabe na máquina.

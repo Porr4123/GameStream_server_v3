@@ -19,6 +19,15 @@ public sealed class ProfileStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    /// <summary>Recebe avisos do carregamento (vão para o log do servidor). Sem isso, vão só para o console.</summary>
+    public Action<string>? Log { get; set; }
+
+    private void Warn(string msg)
+    {
+        Console.WriteLine(msg);
+        Log?.Invoke(msg);
+    }
+
     private readonly string _dir;
     private readonly object _lock = new();
     private IReadOnlyList<GameProfile> _profiles = Array.Empty<GameProfile>();
@@ -44,12 +53,17 @@ public sealed class ProfileStore
 
                 try
                 {
-                    var profile = LoadOrCreate(folder);
+                    var profile = LoadOrCreate(folder, Warn);
                     if (profile is not null) found.Add(profile);
+                }
+                catch (JsonException ex)
+                {
+                    Warn($"[jogos] '{name}': o game.json está inválido (linha {(ex.LineNumber ?? 0) + 1}, coluna {(ex.BytePositionInLine ?? 0) + 1}): {ex.Message} " +
+                         "Dica: em caminhos do Windows use barra dupla (C:\\Program Files\\...) ou barra normal (C:/Program Files/...). O jogo fica FORA da lista até corrigir.");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[jogos] erro na pasta '{name}': {ex.Message}");
+                    Warn($"[jogos] erro na pasta '{name}': {ex.Message}");
                 }
             }
         }
@@ -60,7 +74,7 @@ public sealed class ProfileStore
     public GameProfile? Find(string id) =>
         All.FirstOrDefault(p => p.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
 
-    private static GameProfile? LoadOrCreate(string folder)
+    internal static GameProfile? LoadOrCreate(string folder, Action<string>? warn = null)
     {
         var folderName = Path.GetFileName(folder);
         var file = Path.Combine(folder, "game.json");
@@ -70,13 +84,18 @@ public sealed class ProfileStore
 
         if (File.Exists(file))
         {
-            profile = JsonSerializer.Deserialize<GameProfile>(File.ReadAllText(file), ReadOptions) ?? new GameProfile();
+            profile = ParseProfile(File.ReadAllText(file), warn, folderName);
         }
         else
         {
             profile = GameProfile.CreateDefault(folderName);
             generated = true;
         }
+
+        // game.json enxuto (só os campos que o dono quis mudar): o que faltar usa os padrões.
+        var defaults = GameProfile.CreateDefault(folderName);
+        if (profile.AllowedKeys.Count == 0) profile.AllowedKeys = defaults.AllowedKeys;
+        if (profile.Layout.Count == 0) profile.Layout = defaults.Layout;
 
         profile.Id = folderName.ToLowerInvariant();
         profile.Folder = folder;
@@ -101,6 +120,24 @@ public sealed class ProfileStore
         if (generated) File.WriteAllText(file, JsonSerializer.Serialize(profile, WriteOptions));
 
         return profile;
+    }
+
+    /// <summary>Lê o JSON; se falhar por causa de barras simples em caminhos do Windows (C:\Program Files), conserta e tenta de novo.</summary>
+    internal static GameProfile ParseProfile(string json, Action<string>? warn = null, string folderName = "")
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<GameProfile>(json, ReadOptions) ?? new GameProfile();
+        }
+        catch (JsonException)
+        {
+            // \ seguido de qualquer coisa que não seja escape válido de JSON vira \\ (ex.: \P de "\Program Files").
+            string fixedJson = System.Text.RegularExpressions.Regex.Replace(json, @"\\(?![""\\/bfnrtu])", @"\\");
+            if (fixedJson == json) throw;
+            var profile = JsonSerializer.Deserialize<GameProfile>(fixedJson, ReadOptions) ?? new GameProfile();
+            warn?.Invoke($"[jogos] '{folderName}': o game.json tinha barras simples em caminhos; li assim mesmo. Prefira C:\\\\Pasta\\\\arquivo ou C:/Pasta/arquivo.");
+            return profile;
+        }
     }
 
     private static string ToStoredPath(string folder, string exePath)

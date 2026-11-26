@@ -1101,6 +1101,21 @@ async Task TestAudioAsync()
         Check(s2.LoudMs == 500, "porta: som parado não acumula tempo");
     }
 
+    // game.json: barras simples de caminho Windows e campos que faltam
+    {
+        string raw = "{ \"name\": \"Devast\", \"exe\": \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\", \"audioCaptureDevice\": \"S/PDIF\" }";
+        var warns = new List<string>();
+        var pr = ProfileStore.ParseProfile(raw, warns.Add, "devast");
+        Check(pr.Exe == "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" && warns.Count == 0, "game.json com barra dupla lido normalmente");
+        string single = raw.Replace("\\\\", "\\");
+        var warns2 = new List<string>();
+        var pr2 = ProfileStore.ParseProfile(single, warns2.Add, "devast");
+        Check(pr2.Exe == "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" && warns2.Count == 1, "game.json com barra simples é consertado e avisa");
+        bool threw = false;
+        try { ProfileStore.ParseProfile("{ \"name\": ", null, "x"); } catch (System.Text.Json.JsonException) { threw = true; }
+        Check(threw, "game.json quebrado de verdade continua dando erro");
+    }
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);

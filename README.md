@@ -385,3 +385,9 @@ Abra o Chrome direto, com perfil isolado (a pasta de dados do jogo já é redire
 
 `windowTitle` é um trecho do título da janela (confira o título real na barra da janela). As opções `--disable-...` evitam que o Chrome pare de desenhar a janela quando ela fica
 escondida/atrás de outras, o que congelaria a imagem capturada.
+
+### game.json: erros comuns
+
+- Em caminhos do Windows use barra dupla (`"C:\\Program Files\\..."`) ou barra normal (`"C:/Program Files/..."`). Barra simples quebra o JSON; o servidor agora conserta e avisa no log.
+- Se o game.json for inválido, o jogo **some da lista**; o log mostra `[jogos] 'pasta': o game.json está inválido (linha X)`.
+- Pode escrever só os campos que quer mudar: `allowedKeys` e `layout` que faltarem usam os padrões.
