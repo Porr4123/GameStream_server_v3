@@ -361,3 +361,27 @@ de volta em Som > Reprodução. O log mostra `Som: o dispositivo de saída padr�
 5. Rede de segurança: os dispositivos desativados ficam anotados em `dispositivos-escondidos.json`; se o servidor fechar de repente, na próxima partida eles são devolvidos.
 
 `"exclusiveAudio": false` desliga tudo isso (sobra só a troca do dispositivo padrão, `routeGameAudio`).
+
+### O som some depois de confirmado
+
+Os jogos seguem o dispositivo padrão do Windows. Por isso, depois do `Som confirmado`, só os OUTROS dispositivos são reativados; o padrão continua no `audioCaptureDevice`
+até a sessão acabar (`restoreDefaultAfterConfirm: true` devolve o padrão logo, mas o jogo pode trocar de canal e o som some do celular). Consequência: enquanto a sessão
+dura, programas que seguem o padrão (navegador, música) tocam no dispositivo escolhido; para tocá-los nos alto-falantes, escolha-os dentro do programa.
+
+## Jogos HTML / Chrome em modo aplicativo (ex.: devast.io)
+
+`chrome_proxy.exe` (o atalho "instalado como aplicativo") só entrega a página para outro processo do Chrome e fecha logo: o servidor não acha a janela.
+Abra o Chrome direto, com perfil isolado (a pasta de dados do jogo já é redirecionada) e sem pausar a página quando ela fica atrás de outras janelas:
+
+```json
+{
+  "name": "Devast",
+  "exe": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "args": "--app=https://devast.io --window-size=1280,720 --autoplay-policy=no-user-gesture-required --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling",
+  "windowTitle": "Devast",
+  "audioCaptureDevice": "S/PDIF"
+}
+```
+
+`windowTitle` é um trecho do título da janela (confira o título real na barra da janela). As opções `--disable-...` evitam que o Chrome pare de desenhar a janela quando ela fica
+escondida/atrás de outras, o que congelaria a imagem capturada.

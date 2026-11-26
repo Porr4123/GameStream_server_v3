@@ -653,13 +653,22 @@ public sealed class StreamSession
                 var state = gate.Update(loud, watch.ElapsedMilliseconds);
                 if (state == GateState.Confirmed)
                 {
-                    RestoreAudioDevices();
-                    _log.LogInformation("Som confirmado: o jogo tocou {Sec:0.0} s no dispositivo \"{Dev}\". Os outros dispositivos de saída voltaram ao normal.",
-                        gate.LoudMs / 1000.0, _profile.AudioCaptureDevice);
+                    // Devolve os outros dispositivos, mas NÃO o padrão: os jogos seguem o padrão do Windows e, se ele voltar
+                    // para os alto-falantes enquanto jogam, o som muda de canal e some do celular. O padrão volta no fim da sessão.
+                    Interlocked.Exchange(ref _exclusive, null)?.Dispose();
+                    if (_profile.RestoreDefaultAfterConfirm)
+                    {
+                        _defaultDevice?.Dispose();
+                        _defaultDevice = null;
+                    }
+                    _log.LogInformation("Som confirmado: o jogo tocou {Sec:0.0} s no dispositivo \"{Dev}\". Os outros dispositivos de saída foram reativados; " +
+                                        "o dispositivo padrão {Padrao}.",
+                        gate.LoudMs / 1000.0, _profile.AudioCaptureDevice,
+                        _profile.RestoreDefaultAfterConfirm ? "também voltou ao normal" : "só volta ao normal quando a sessão acabar (para o jogo não trocar de canal)");
                     return;
                 }
-                bool exited = false;
-                try { exited = game.Process.HasExited; } catch { /* ignora */ }
+                // Launchers (ex.: Chrome em modo app) podem encerrar o processo inicial e seguir vivos em outro: vale a janela.
+                bool exited = !Native.IsWindow(game.WindowHandle);
                 if (exited || state == GateState.TimedOut)
                 {
                     string why = exited

@@ -91,6 +91,12 @@ public sealed class GameProfile
     /// </summary>
     public bool ExclusiveAudio { get; set; } = true;
 
+    /// <summary>
+    /// Depois de confirmado o som, também devolver o dispositivo PADRÃO do Windows? Padrão false: os jogos seguem o padrão e,
+    /// se ele voltar aos alto-falantes durante o jogo, o som troca de canal e some do celular. Com false o padrão volta no fim da sessão.
+    /// </summary>
+    public bool RestoreDefaultAfterConfirm { get; set; }
+
     /// <summary>Segundos esperando o jogo tocar (depois de aberto) antes de dar erro.</summary>
     public int AudioStartTimeoutSec { get; set; } = 60;
 
