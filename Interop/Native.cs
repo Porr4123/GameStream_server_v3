@@ -177,13 +177,13 @@ internal static class Native
         return sb.ToString();
     }
 
-    /// <summary>Primeira janela visível cujo título contém o texto.</summary>
-    public static IntPtr FindWindowContaining(string text)
+    /// <summary>Primeira janela visível cujo título contém o texto (ignorando as de <paramref name="exclude"/>).</summary>
+    public static IntPtr FindWindowContaining(string text, ISet<IntPtr>? exclude = null)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, _) =>
         {
-            if (!IsWindowVisible(h)) return true;
+            if (!IsWindowVisible(h) || (exclude?.Contains(h) ?? false)) return true;
             var title = GetTitle(h);
             if (title.Length > 0 && title.Contains(text, StringComparison.OrdinalIgnoreCase))
             {
@@ -194,6 +194,28 @@ internal static class Native
         }, IntPtr.Zero);
         return found;
     }
+
+    /// <summary>Todas as janelas visíveis cujo título contém o texto (para saber quais já existiam antes de abrir o jogo).</summary>
+    public static HashSet<IntPtr> FindAllWindowsContaining(string text)
+    {
+        var all = new HashSet<IntPtr>();
+        EnumWindows((h, _) =>
+        {
+            if (IsWindowVisible(h) && GetTitle(h).Contains(text, StringComparison.OrdinalIgnoreCase)) all.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        return all;
+    }
+
+    // ---------------- Mouse por mensagens (sem mover o mouse de verdade) ----------------
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
+    public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
+    public const int CWP_SKIPINVISIBLE = 0x0001;
+
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hWnd, ref POINT point);
+    [DllImport("user32.dll")] public static extern IntPtr ChildWindowFromPointEx(IntPtr hWndParent, POINT point, uint flags);
 
     // ---------------- GDI ----------------
     [StructLayout(LayoutKind.Sequential)]

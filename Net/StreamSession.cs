@@ -23,6 +23,7 @@ namespace GameStream.Server.Net;
 ///   binário [2][0][quadro AAC cru]              (som do jogo, só se o hello trouxe "audio")
 /// Cliente -> servidor:
 ///   texto  {"t":"key","k":"Z","d":1}            (d: 1 = apertou, 0 = soltou)
+///   texto  {"t":"mouse","a":"move|down|up|click","b":"left|right","x":0..1,"y":0..1}  (x,y: posição no quadro transmitido)
 ///   texto  {"t":"ping", ...}  ou  ping
 /// </summary>
 public sealed class StreamSession
@@ -38,6 +39,9 @@ public sealed class StreamSession
     private readonly ClientDisplay _display;
 
     private volatile InputInjector? _input;
+    private volatile MouseInjector? _mouse;
+    private int _canvasW, _canvasH;
+    private long _mouseLogged;
     private LaunchedGame? _game;
     private AudioStreamer? _audioStreamer;
     private GameAudioMuter? _muter;
@@ -118,6 +122,7 @@ public sealed class StreamSession
         int profileWidth = (_profile.StreamWidth > 0 ? _profile.StreamWidth : 1280) & ~1;
         int profileHeight = (_profile.StreamHeight > 0 ? _profile.StreamHeight : 720) & ~1;
         var (width, height) = StreamGeometry.CanvasSize(profileWidth, profileHeight, _display.ScreenWidth, _display.ScreenHeight);
+        _canvasW = width; _canvasH = height;
         int bitrateKbps = StreamGeometry.ScaleBitrate(_profile.BitrateKbps, profileWidth * profileHeight, width, height);
         int fps = Math.Clamp(_profile.Fps, 1, 60);
 
@@ -208,7 +213,16 @@ public sealed class StreamSession
                 audio = _audioEnabled ? new { codec = "aac", rate = ProcessLoopbackCapture.SampleRate, ch = ProcessLoopbackCapture.Channels } : null,
                 // O cliente pode abrir ws://host/audio?pin=..&token=.. para receber o som num soquete próprio.
                 // Se não abrir (cliente antigo), o som segue pelo soquete principal.
-                audioSocket = _audioEnabled ? new { path = "/audio", token = _audioToken } : null
+                audioSocket = _audioEnabled ? new { path = "/audio", token = _audioToken } : null,
+                // Mouse: o cliente desenha a camada de mouse (embaixo) e a de botões (em cima); estas são as regras do perfil.
+                mouse = new
+                {
+                    enabled = _profile.Mouse,
+                    exclude = _profile.MouseExclude.Select(b => new { x = b.X, y = b.Y, w = b.W, h = b.H }).ToArray(),
+                    buttonMargin = Math.Clamp(_profile.MouseButtonMargin, 0, 0.2),
+                    holdMs = Math.Clamp(_profile.MouseHoldMs, 100, 2000),
+                    doubleTapMs = Math.Clamp(_profile.MouseDoubleTapMs, 100, 1000)
+                }
             }, ct);
             _log.LogInformation("hello enviado ao cliente ({W}x{H} @ {Fps} fps)", width, height, fps);
 
@@ -582,6 +596,12 @@ public sealed class StreamSession
             _log.LogInformation("Mostrando o jogo no vídeo: {Framing}", framing);
 
             _input = new InputInjector(game.WindowHandle, hider is null ? null : hider.KeepAtBottom);
+            if (_profile.Mouse)
+            {
+                var fitMode = _display.Fit;
+                _mouse = new MouseInjector(game.WindowHandle, () => (_canvasW, _canvasH, fitMode),
+                    _profile.MouseExclude.Select(b => (b.X, b.Y, b.W, b.H)).ToList());
+            }
             _log.LogInformation("Entrada de teclas pronta: só letras, números, setas, CTRL, SHIFT e ESC ({N} teclas), " +
                                 "e só com o jogo em primeiro plano.", KeyMap.Names.Count);
 
@@ -604,6 +624,8 @@ public sealed class StreamSession
                 _gameState = (int)GameState.Exited;
                 _input?.ReleaseAll();
                 _input = null;
+                _mouse?.ReleaseAll();
+                _mouse = null;
                 _gameProbe = null;
                 Interlocked.Exchange(ref _muter, null)?.Dispose();
                 Interlocked.Exchange(ref _game, null)?.Dispose();
@@ -625,6 +647,8 @@ public sealed class StreamSession
         {
             _input?.ReleaseAll();
             _input = null;
+            _mouse?.ReleaseAll();
+            _mouse = null;
             RestoreAudioDevices();
         }
     }
@@ -822,6 +846,25 @@ public sealed class StreamSession
                         });
                 break;
 
+            case "mouse":
+                {
+                    var mouse = _mouse; // null: perfil sem mouse ou o jogo ainda não abriu
+                    if (mouse is null || !_profile.Mouse) break;
+                    if (!TryNumber(obj["x"], out double mx) || !TryNumber(obj["y"], out double my))
+                    {
+                        _client.CountBad();
+                        break;
+                    }
+                    string? act = Str(obj["a"]);
+                    var res = mouse.Handle(act, Str(obj["b"]), mx, my);
+                    if (res == MouseOutcome.Rejected && Interlocked.Increment(ref _mouseLogged) <= 5)
+                        _log.LogWarning("Mouse recusado ({Act} {Btn} em {X:0.00},{Y:0.00}): botão/ação inválidos ou a janela sob o ponto não é do jogo.",
+                            act, Str(obj["b"]), mx, my);
+                    else if (res == MouseOutcome.Sent && act is "down" or "click" && Interlocked.Increment(ref _mouseLogged) <= 5)
+                        _log.LogInformation("Mouse {Act} {Btn} em {X:0.00},{Y:0.00}: enviado à janela do jogo.", act, Str(obj["b"]) ?? "left", mx, my);
+                    break;
+                }
+
             case "ping":
                 _client.CountPing();
                 obj["t"] = "pong"; // devolve os mesmos campos (id, hora etc.)
@@ -838,6 +881,13 @@ public sealed class StreamSession
                     _log.LogWarning("O cliente enviou uma mensagem desconhecida (tipo \"{Type}\"): {Text}", type ?? "(sem tipo)", Trim(text, 160));
                 break;
         }
+    }
+
+    private static bool TryNumber(JsonNode? node, out double value)
+    {
+        value = 0;
+        try { if (node is null) return false; value = node.GetValue<double>(); return double.IsFinite(value); }
+        catch (Exception) { return false; }
     }
 
     private static string Trim(string s, int max) => s.Length <= max ? s : s[..max] + "...";

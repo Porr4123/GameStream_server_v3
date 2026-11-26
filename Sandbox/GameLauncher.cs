@@ -73,6 +73,9 @@ public static class GameLauncher
             psi.Environment["LOCALAPPDATA"] = local;
         }
 
+        // Janelas com esse título que JÁ existiam (ex.: sobra de uma sessão anterior): nunca são a do jogo que estamos abrindo.
+        HashSet<IntPtr>? stale = string.IsNullOrWhiteSpace(profile.WindowTitle) ? null : Native.FindAllWindowsContaining(profile.WindowTitle!);
+
         var job = new JobObject(limits);
         Process? process = null;
         try
@@ -80,7 +83,7 @@ public static class GameLauncher
             process = Process.Start(psi) ?? throw new InvalidOperationException("Falha ao iniciar o jogo.");
             job.Assign(process); // TODO: iniciar suspenso para não haver janela de tempo antes do job.
 
-            var (hwnd, title) = await WaitForWindowAsync(process, profile, TimeSpan.FromSeconds(45), ct);
+            var (hwnd, title) = await WaitForWindowAsync(process, profile, TimeSpan.FromSeconds(45), ct, stale);
             return new LaunchedGame(process, job, hwnd, title, limits);
         }
         catch
@@ -114,7 +117,7 @@ public static class GameLauncher
     }
 
     private static async Task<(IntPtr, string)> WaitForWindowAsync(
-        Process process, GameProfile profile, TimeSpan timeout, CancellationToken ct)
+        Process process, GameProfile profile, TimeSpan timeout, CancellationToken ct, ISet<IntPtr>? stale = null)
     {
         bool byTitle = !string.IsNullOrWhiteSpace(profile.WindowTitle);
         var deadline = DateTime.UtcNow + timeout;
@@ -126,7 +129,7 @@ public static class GameLauncher
             IntPtr hwnd;
             if (byTitle)
             {
-                hwnd = Native.FindWindowContaining(profile.WindowTitle!);
+                hwnd = Native.FindWindowContaining(profile.WindowTitle!, stale);
             }
             else
             {

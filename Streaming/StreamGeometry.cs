@@ -74,5 +74,24 @@ public static class StreamGeometry
         return Math.Min(1.0, s);
     }
 
+    /// <summary>
+    /// Converte um ponto do quadro transmitido (0..1 em cada eixo, como o celular vê) para um ponto do jogo (0..1 da área do jogo).
+    /// null = o ponto caiu na faixa preta do modo Fit (fora do jogo).
+    /// </summary>
+    public static (double X, double Y)? MapToGame(int canvasW, int canvasH, int gameW, int gameH, FitMode mode, double nx, double ny)
+    {
+        if (canvasW <= 0 || canvasH <= 0 || gameW <= 0 || gameH <= 0) return null;
+        if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) return null; // inclui NaN
+        if (mode == FitMode.Stretch) return (nx, ny);
+
+        double sx = (double)canvasW / gameW, sy = (double)canvasH / gameH;
+        double s = mode == FitMode.Fill ? Math.Max(sx, sy) : Math.Min(sx, sy);
+        double w = gameW * s, h = gameH * s;
+        double gx = (nx * canvasW - (canvasW - w) / 2) / w;
+        double gy = (ny * canvasH - (canvasH - h) / 2) / h;
+        if (gx < 0 || gx > 1 || gy < 0 || gy > 1) return null;
+        return (gx, gy);
+    }
+
     private static int Even(double value) => ((int)value) & ~1;
 }

@@ -1128,6 +1128,43 @@ async Task TestAudioAsync()
         Check(d.Contains("/pasta/x") && !d.Contains("{dados}"), "{dados} é substituído");
     }
 
+    // Mouse isolado
+    {
+        // geometria: quadro 1414x634, jogo 896x634 centrado (Fit): faixas pretas de 259 px de cada lado
+        Check(StreamGeometry.MapToGame(1414, 634, 896, 634, FitMode.Fit, 0.5, 0.5) is { } mc && Math.Abs(mc.X - 0.5) < 1e-6 && Math.Abs(mc.Y - 0.5) < 1e-6, "mouse: centro do quadro = centro do jogo");
+        Check(StreamGeometry.MapToGame(1414, 634, 896, 634, FitMode.Fit, 0.05, 0.5) is null, "mouse: faixa preta do Fit é descartada");
+        Check(StreamGeometry.MapToGame(1414, 634, 896, 634, FitMode.Stretch, 0.05, 0.5) is { X: 0.05 }, "mouse: Stretch mapeia direto");
+        Check(StreamGeometry.MapToGame(1414, 634, 896, 634, FitMode.Fit, double.NaN, 0.5) is null && StreamGeometry.MapToGame(1414, 634, 896, 634, FitMode.Fit, 1.2, 0.5) is null, "mouse: NaN e fora de 0..1 são recusados");
+
+        var fake = new FakeMessenger { Pid = 100, Size = (800, 600) };
+        long clock = 1000;
+        var mi = new MouseInjector((IntPtr)1, () => (800, 600, FitMode.Stretch), new[] { (0.0, 0.0, 0.1, 0.1) }, fake, () => clock);
+
+        Check(mi.Handle("down", "left", 0.5, 0.5) == MouseOutcome.Sent, "mouse: apertar enviado");
+        Check(fake.Msgs.Select(m => m.Msg).SequenceEqual(new uint[] { 0x200, 0x201 }), "mouse: mover + botão esquerdo apertado");
+        Check(fake.Msgs[1].L == ((300 << 16) | 400) && fake.Msgs[1].W == 1, "mouse: coordenadas de cliente (400,300) e MK_LBUTTON");
+        Check(mi.Handle("down", "left", 0.5, 0.5) == MouseOutcome.Ignored, "mouse: repetição de apertar é ignorada");
+        clock += 20;
+        Check(mi.Handle("move", "left", 0.6, 0.5) == MouseOutcome.Sent && fake.Msgs[^1].Msg == 0x200 && fake.Msgs[^1].W == 1, "mouse: arrastar manda movimento com o botão apertado");
+        clock += 2;
+        Check(mi.Handle("move", "left", 0.61, 0.5) == MouseOutcome.Ignored, "mouse: movimentos rápido demais são limitados");
+        Check(mi.Handle("up", "left", 0.6, 0.5) == MouseOutcome.Sent && fake.Msgs[^1].Msg == 0x202, "mouse: soltar enviado");
+        Check(mi.Handle("up", "left", 0.6, 0.5) == MouseOutcome.Ignored, "mouse: soltar sem apertar é ignorado");
+
+        int before = fake.Msgs.Count;
+        Check(mi.Handle("down", "right", 0.5, 0.5) == MouseOutcome.Sent && fake.Msgs[^1].Msg == 0x204 && fake.Msgs[^1].W == 2, "mouse: botão direito");
+        mi.ReleaseAll();
+        Check(fake.Msgs[^1].Msg == 0x205 && fake.Msgs.Count == before + 3, "mouse: ReleaseAll solta o que ficou apertado");
+
+        Check(mi.Handle("down", "left", 0.05, 0.05) == MouseOutcome.Ignored, "mouse: caixa de exclusão do perfil bloqueia");
+        Check(mi.Handle("down", "middle", 0.5, 0.5) == MouseOutcome.Rejected, "mouse: botão do meio recusado");
+        Check(mi.Handle("wheel", "left", 0.5, 0.5) == MouseOutcome.Rejected, "mouse: ação desconhecida recusada");
+
+        fake.ChildPid = 999; // janela sob o ponto é de outro processo
+        int n = fake.Msgs.Count;
+        Check(mi.Handle("down", "left", 0.5, 0.5) == MouseOutcome.Rejected && fake.Msgs.Count == n, "mouse: janela de outro processo nunca recebe mensagem");
+    }
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);
@@ -1415,4 +1452,17 @@ sealed class FakeWebSocket : WebSocket
     public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
     public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
     public override void Dispose() { }
+}
+
+
+internal sealed class FakeMessenger : IWindowMessenger
+{
+    public uint Pid;
+    public uint? ChildPid;
+    public (int W, int H) Size;
+    public List<(IntPtr Hwnd, uint Msg, nint W, nint L)> Msgs = new();
+    public (int W, int H) ClientSize(IntPtr hwnd) => Size;
+    public (IntPtr Child, int X, int Y) ChildAt(IntPtr hwnd, int x, int y) => ((IntPtr)2, x, y);
+    public uint OwnerPid(IntPtr hwnd) => hwnd == (IntPtr)2 && ChildPid is { } c ? c : Pid;
+    public void Post(IntPtr hwnd, uint msg, nint wParam, nint lParam) => Msgs.Add((hwnd, msg, wParam, lParam));
 }

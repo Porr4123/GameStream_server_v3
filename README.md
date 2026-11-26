@@ -397,3 +397,14 @@ escondida/atrás de outras, o que congelaria a imagem capturada.
 Se o `exe` é um navegador Chromium (chrome, msedge, brave, chromium, vivaldi) e o `args` não tem `--user-data-dir`, o servidor acrescenta um perfil só do jogo
 (`<pasta do jogo>\dados\navegador`) mais `--no-first-run --no-default-browser-check`. Sem isso o Chrome entrega a página ao Chrome que você já tem aberto: a janela
 passa a ser de OUTRO processo, fora do limite de CPU/RAM, que não fecha com o jogo (o log mostra "a JANELA é de outro processo"). Nos `args` também vale `{pasta}` e `{dados}`.
+
+## Mouse isolado
+
+O celular manda `{"t":"mouse","a":"move|down|up|click","b":"left|right","x":0..1,"y":0..1}` (posição no quadro transmitido). O servidor posta mensagens de mouse DIRETO na janela do jogo:
+o mouse do PC não se mexe, o foco não muda e nada chega a outras janelas. Só botão esquerdo e direito; ponto na faixa preta do Fit ou nas caixas `mouseExclude` é descartado;
+a janela que recebe a mensagem precisa ser do processo do jogo; `ReleaseAll` solta tudo no fim da sessão. Jogos que leem o mouse por entrada "crua" (DirectInput/Raw Input) ignoram isso.
+
+No `game.json`: `"mouse": true` (padrão), `"mouseExclude": [{"x":0,"y":0.7,"w":0.3,"h":0.3}]` (frações do quadro), `"mouseButtonMargin": 0.02`, `"mouseHoldMs": 350`, `"mouseDoubleTapMs": 300`.
+Tudo isso vai no `hello` (`mouse: {...}`) para o cliente montar as camadas (mouse embaixo, botões por cima). Prompt para o cliente: `docs/prompt-cliente-mouse.md`.
+
+Também: ao abrir o jogo por `windowTitle`, janelas com esse título que já existiam antes (sobra de sessão anterior) são ignoradas.

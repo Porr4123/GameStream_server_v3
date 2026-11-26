@@ -150,6 +150,24 @@ public sealed class GameProfile
     /// </summary>
     public List<string> AllowedKeys { get; set; } = new();
 
+    /// <summary>
+    /// Mouse pelo celular (1ª camada do cliente; os botões ficam por cima, 2ª camada). O clique vai direto para a janela do jogo,
+    /// sem mover o mouse do PC. false = o servidor ignora mensagens de mouse.
+    /// </summary>
+    public bool Mouse { get; set; } = true;
+
+    /// <summary>Caixas onde o mouse NÃO atua (mesmo que o cliente mande), em fração do quadro transmitido: x, y, w, h de 0 a 1. O cliente também as usa.</summary>
+    public List<MouseBox> MouseExclude { get; set; } = new();
+
+    /// <summary>Folga em volta de cada botão onde o mouse não atua, em fração do lado menor da tela do cliente (0 a 0,2).</summary>
+    public double MouseButtonMargin { get; set; } = 0.02;
+
+    /// <summary>Tempo (ms) de dedo parado que vira "clicar e segurar" (botão esquerdo contínuo).</summary>
+    public int MouseHoldMs { get; set; } = 350;
+
+    /// <summary>Intervalo máximo (ms) entre dois toques para valer como duplo toque (clique direito).</summary>
+    public int MouseDoubleTapMs { get; set; } = 300;
+
     /// <summary>Layout padrão dos botões; o cliente pode personalizar e salvar o seu.</summary>
     public List<ButtonLayout> Layout { get; set; } = new();
 
@@ -173,6 +191,14 @@ public sealed class GameProfile
             new() { Type = "button", Key = "ESC", Label = "Esc", X = 0.45, Y = 0.04, Size = 0.09 }
         }
     };
+}
+
+public sealed class MouseBox
+{
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double W { get; set; }
+    public double H { get; set; }
 }
 
 public sealed class ButtonLayout
