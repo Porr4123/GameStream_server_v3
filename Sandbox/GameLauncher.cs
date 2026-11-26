@@ -60,7 +60,8 @@ public static class GameLauncher
             : Path.GetDirectoryName(exe)!;
 
         var psi = new ProcessStartInfo(exe) { WorkingDirectory = workingDir, UseShellExecute = false };
-        if (!string.IsNullOrWhiteSpace(profile.Args)) psi.Arguments = profile.Args;
+        string finalArgs = PrepareArgs(exe, profile.Args, folder);
+        if (finalArgs.Length > 0) psi.Arguments = finalArgs;
 
         if (profile.RedirectAppData)
         {
@@ -88,6 +89,28 @@ public static class GameLauncher
             job.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Troca {pasta}/{dados} nos argumentos. Para navegadores Chromium (Chrome, Edge, Brave) sem --user-data-dir, cria um perfil PRÓPRIO do jogo:
+    /// sem ele o navegador entrega a página ao Chrome que já está aberto do usuário (outro processo, fora do limite de CPU/RAM
+    /// e que não fecha junto com o jogo) e a captura/som/teclas perdem o controle.
+    /// </summary>
+    internal static string PrepareArgs(string exe, string? args, string folder)
+    {
+        string dados = Path.Combine(folder, "dados");
+        string result = (args ?? "").Replace("{pasta}", folder, StringComparison.OrdinalIgnoreCase)
+                                    .Replace("{dados}", dados, StringComparison.OrdinalIgnoreCase).Trim();
+
+        string name = Path.GetFileNameWithoutExtension(exe.Substring(exe.LastIndexOfAny(new[] { '\\', '/' }) + 1)).ToLowerInvariant();
+        bool chromium = name is "chrome" or "msedge" or "brave" or "chromium" or "vivaldi";
+        if (chromium && !result.Contains("--user-data-dir", StringComparison.OrdinalIgnoreCase))
+        {
+            string profileDir = Path.Combine(dados, "navegador");
+            try { Directory.CreateDirectory(profileDir); } catch { /* o navegador cria */ }
+            result = $"{result} --user-data-dir=\"{profileDir}\" --no-first-run --no-default-browser-check".Trim();
+        }
+        return result;
     }
 
     private static async Task<(IntPtr, string)> WaitForWindowAsync(

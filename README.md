@@ -391,3 +391,9 @@ escondida/atrás de outras, o que congelaria a imagem capturada.
 - Em caminhos do Windows use barra dupla (`"C:\\Program Files\\..."`) ou barra normal (`"C:/Program Files/..."`). Barra simples quebra o JSON; o servidor agora conserta e avisa no log.
 - Se o game.json for inválido, o jogo **some da lista**; o log mostra `[jogos] 'pasta': o game.json está inválido (linha X)`.
 - Pode escrever só os campos que quer mudar: `allowedKeys` e `layout` que faltarem usam os padrões.
+
+### Chrome/Edge como jogo: perfil próprio automático
+
+Se o `exe` é um navegador Chromium (chrome, msedge, brave, chromium, vivaldi) e o `args` não tem `--user-data-dir`, o servidor acrescenta um perfil só do jogo
+(`<pasta do jogo>\dados\navegador`) mais `--no-first-run --no-default-browser-check`. Sem isso o Chrome entrega a página ao Chrome que você já tem aberto: a janela
+passa a ser de OUTRO processo, fora do limite de CPU/RAM, que não fecha com o jogo (o log mostra "a JANELA é de outro processo"). Nos `args` também vale `{pasta}` e `{dados}`.

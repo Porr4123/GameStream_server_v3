@@ -1116,6 +1116,18 @@ async Task TestAudioAsync()
         Check(threw, "game.json quebrado de verdade continua dando erro");
     }
 
+    // Navegador Chromium como "jogo": perfil próprio para não cair no Chrome já aberto
+    {
+        string a = GameLauncher.PrepareArgs(@"C:\Program Files\Google\Chrome\Application\chrome.exe", "--app=https://devast.io", Path.Combine(Path.GetTempPath(), "gs_t1"));
+        Check(a.Contains("--user-data-dir=") && a.Contains("--app=https://devast.io") && a.Contains("--no-first-run"), "Chrome sem --user-data-dir ganha perfil próprio");
+        string b = GameLauncher.PrepareArgs(@"C:\x\chrome.exe", "--app=x --user-data-dir=C:\\meu", Path.GetTempPath());
+        Check(!b.Contains("dados") && b.Split("--user-data-dir").Length == 2, "Chrome com --user-data-dir do dono não é alterado");
+        string c = GameLauncher.PrepareArgs(@"C:\jogos\Jogo.exe", "-windowed", Path.GetTempPath());
+        Check(c == "-windowed", "jogo comum não muda os argumentos");
+        string d = GameLauncher.PrepareArgs(@"C:\jogos\Jogo.exe", "-save {dados}\\s", "/pasta/x");
+        Check(d.Contains("/pasta/x") && !d.Contains("{dados}"), "{dados} é substituído");
+    }
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);
