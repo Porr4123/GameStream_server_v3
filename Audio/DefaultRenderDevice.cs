@@ -9,7 +9,7 @@ namespace GameStream.Server.Audio;
 /// </summary>
 internal sealed class DefaultRenderDevice : IDisposable
 {
-    private static readonly Guid ClsidPolicyConfig = new("294935CE-F637-4E7C-A41B-AB255460B862");
+    private static readonly Guid ClsidPolicyConfig = new("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9");
     private static readonly Guid ClsidEnumerator = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
 
     private string? _previousId;
