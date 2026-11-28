@@ -1165,6 +1165,8 @@ async Task TestAudioAsync()
         Check(mi.Handle("down", "left", 0.5, 0.5) == MouseOutcome.Rejected && fake.Msgs.Count == n, "mouse: janela de outro processo nunca recebe mensagem");
     }
 
+    Check(GameLauncher.IsChromium(@"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe") && GameLauncher.IsChromium("/x/msedge.exe") && !GameLauncher.IsChromium(@"C:\\jogos\\Jogo.exe"), "navegadores Chromium são reconhecidos");
+
     // Modos de transmissão
     {
         var heavy = QualityPlan.For(QualityLevel.Pesado, 60, 8000);

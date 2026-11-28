@@ -76,6 +76,11 @@ public static class GameLauncher
         // Janelas com esse título que JÁ existiam (ex.: sobra de uma sessão anterior): nunca são a do jogo que estamos abrindo.
         HashSet<IntPtr>? stale = string.IsNullOrWhiteSpace(profile.WindowTitle) ? null : Native.FindAllWindowsContaining(profile.WindowTitle!);
 
+        if (IsChromium(exe) && limits.MemoryMb > 0)
+        {
+            // Um navegador usa vários processos (GPU, rede, abas) e passa fácil de 1 GB: com o teto do job o Chrome abre e nunca mostra a janela.
+            limits = limits with { MemoryMb = 0 };
+        }
         var job = new JobObject(limits);
         Process? process = null;
         try
@@ -99,14 +104,20 @@ public static class GameLauncher
     /// sem ele o navegador entrega a página ao Chrome que já está aberto do usuário (outro processo, fora do limite de CPU/RAM
     /// e que não fecha junto com o jogo) e a captura/som/teclas perdem o controle.
     /// </summary>
+    /// <summary>Chrome, Edge, Brave, Chromium ou Vivaldi (vários processos: o teto de RAM do job não vale para eles).</summary>
+    internal static bool IsChromium(string exe)
+    {
+        string name = Path.GetFileNameWithoutExtension(exe.Substring(exe.LastIndexOfAny(new[] { '\\', '/' }) + 1)).ToLowerInvariant();
+        return name is "chrome" or "msedge" or "brave" or "chromium" or "vivaldi";
+    }
+
     internal static string PrepareArgs(string exe, string? args, string folder)
     {
         string dados = Path.Combine(folder, "dados");
         string result = (args ?? "").Replace("{pasta}", folder, StringComparison.OrdinalIgnoreCase)
                                     .Replace("{dados}", dados, StringComparison.OrdinalIgnoreCase).Trim();
 
-        string name = Path.GetFileNameWithoutExtension(exe.Substring(exe.LastIndexOfAny(new[] { '\\', '/' }) + 1)).ToLowerInvariant();
-        bool chromium = name is "chrome" or "msedge" or "brave" or "chromium" or "vivaldi";
+        bool chromium = IsChromium(exe);
         if (chromium && !result.Contains("--user-data-dir", StringComparison.OrdinalIgnoreCase))
         {
             string profileDir = Path.Combine(dados, "navegador");
@@ -148,6 +159,20 @@ public static class GameLauncher
             await Task.Delay(250, ct);
         }
 
-        throw new TimeoutException("A janela do jogo não apareceu a tempo.");
+        string state;
+        try { state = process.HasExited ? $"o processo iniciado já saiu (código {process.ExitCode})" : "o processo iniciado ainda está vivo"; }
+        catch { state = "estado do processo desconhecido"; }
+        var titles = new List<string>();
+        Native.EnumWindows((h, _) =>
+        {
+            if (Native.IsWindowVisible(h) && titles.Count < 15)
+            {
+                var t = Native.GetTitle(h);
+                if (t.Length > 0) titles.Add(t.Length > 40 ? t[..40] : t);
+            }
+            return true;
+        }, IntPtr.Zero);
+        throw new TimeoutException($"A janela do jogo não apareceu a tempo (procurando \"{profile.WindowTitle}\"; {state}). Janelas visíveis agora: " +
+                                   string.Join(" | ", titles));
     }
 }

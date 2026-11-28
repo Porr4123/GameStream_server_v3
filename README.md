@@ -408,3 +408,8 @@ No `game.json`: `"mouse": true` (padrão), `"mouseExclude": [{"x":0,"y":0.7,"w":
 Tudo isso vai no `hello` (`mouse: {...}`) para o cliente montar as camadas (mouse embaixo, botões por cima). Prompt para o cliente: `docs/prompt-cliente-mouse.md`.
 
 Também: ao abrir o jogo por `windowTitle`, janelas com esse título que já existiam antes (sobra de sessão anterior) são ignoradas.
+
+### Chrome não abre a janela (limite de RAM)
+
+Um navegador usa vários processos e passa fácil de 1 GB. Com o teto de RAM do job o Chrome inicia mas nunca mostra a janela ("A janela do jogo não apareceu a tempo").
+Para Chrome/Edge/Brave/Chromium/Vivaldi o teto de RAM do job é desligado automaticamente (os núcleos continuam limitados). Se a janela não aparecer, o erro agora lista o estado do processo e os títulos das janelas visíveis.

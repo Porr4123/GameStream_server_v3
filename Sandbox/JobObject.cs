@@ -22,13 +22,15 @@ internal sealed class JobObject : IDisposable
 
         var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
         ext.BasicLimitInformation.LimitFlags =
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_AFFINITY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_AFFINITY | (limits.MemoryMb > 0 ? JOB_OBJECT_LIMIT_JOB_MEMORY : 0);
 
         // Núcleos que o jogo (e seus filhos) podem usar.
         ext.BasicLimitInformation.Affinity = (UIntPtr)limits.GameMask;
 
         // Memória confirmada (commit) somada de todos os processos do job.
-        ext.JobMemoryLimit = (UIntPtr)((ulong)limits.MemoryMb * 1024UL * 1024UL);
+        // MemoryMb <= 0: sem teto de RAM no job (navegadores: vários processos somam muito e, no teto, o Chrome nem abre a janela).
+        if (limits.MemoryMb > 0)
+            ext.JobMemoryLimit = (UIntPtr)((ulong)limits.MemoryMb * 1024UL * 1024UL);
         SetInfo(JobObjectExtendedLimitInformation, ext);
 
         SetInfo(JobObjectBasicUIRestrictions, new JOBOBJECT_BASIC_UI_RESTRICTIONS
