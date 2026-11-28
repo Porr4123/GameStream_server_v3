@@ -41,7 +41,7 @@ public sealed class StreamSession
     private volatile InputInjector? _input;
     private volatile MouseInjector? _mouse;
     private int _canvasW, _canvasH;
-    private long _mouseLogged;
+    private long _mouseLogged, _mouseRecv;
     private LaunchedGame? _game;
     private AudioStreamer? _audioStreamer;
     private GameAudioMuter? _muter;
@@ -429,6 +429,11 @@ public sealed class StreamSession
                     : exited ? "Jogo: encerrado" : "Jogo: ainda abrindo";
 
                 string keys = $"Cliente: {_client}" + (inp is { } i0 ? $"; enviadas ao jogo {i0.Sent}, foco recusado {i0.FocusFailures}x" : "");
+                long mouseRecv = Interlocked.Exchange(ref _mouseRecv, 0);
+                var mst = _mouse?.TakeStats();
+                if (mouseRecv > 0 || mst is { Sent: > 0 } or { Rejected: > 0 } or { Outside: > 0 })
+                    keys += $"; mouse: {mouseRecv} recebidos do celular, {mst?.Sent ?? 0} enviados à janela do jogo, {mst?.Outside ?? 0} na faixa preta, {mst?.Rejected ?? 0} recusados" +
+                            (_mouse is null ? " (jogo ainda não abriu: ignorados)" : "");
 
                 _statusText = string.Join('\n', video, image, capture, game, keys);
 
@@ -849,6 +854,7 @@ public sealed class StreamSession
             case "mouse":
                 {
                     var mouse = _mouse; // null: perfil sem mouse ou o jogo ainda não abriu
+                    Interlocked.Increment(ref _mouseRecv);
                     if (mouse is null || !_profile.Mouse) break;
                     if (!TryNumber(obj["x"], out double mx) || !TryNumber(obj["y"], out double my))
                     {
